@@ -1,0 +1,9 @@
+service android_mini_server_native /system/bin/sh /data/adb/modules/android-mini-server-native/service.sh
+    user root
+    group root
+    seclabel u:r:ksu:s0
+    disabled
+    oneshot
+
+on property:sys.boot_completed=1
+    start android_mini_server_native

@@ -1,0 +1,6 @@
+id=android-mini-server-native
+name=Xray Server Native
+version=0.6.23
+versionCode=42
+author=Takeshidev
+description=Native ARM64 Xray, 3x-ui, Cloudflare Tunnel, and WebUI for rooted Android.

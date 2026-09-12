@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Android Mini Server</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/overrides.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">LOCAL MANAGER · 127.0.0.1:2036</p>
+        <h1>Android Mini Server</h1>
+        <p class="subtitle">3x-ui, Cloudflare Tunnel và VLESS native.</p>
+      </div>
+      <div class="header-actions">
+        <a id="panel-link" class="panel-link" href="http://127.0.0.1:2053/" target="_blank" rel="noreferrer">Mở 3x-ui</a>
+        <button id="refresh-button" class="icon-button" type="button" title="Cập nhật trạng thái" aria-label="Cập nhật trạng thái">↻</button>
+      </div>
+    </header>
+
+    <section class="status-grid" aria-label="Trạng thái dịch vụ">
+      <article class="status-card">
+        <span>1 · 3x-ui</span>
+        <strong id="panel-status">Đang kiểm tra</strong>
+        <div class="panel-credentials"><span>User: <b id="panel-user">-</b></span><span>Password: <b id="panel-password">-</b> <button id="copy-password" type="button">Copy pass</button></span></div>
+        <div class="controls"><a id="panel-card-link" class="panel-link" href="http://127.0.0.1:2053/" target="_blank" rel="noreferrer">Mở 3x-ui</a><button data-service="panel" data-action="start">Chạy</button><button data-service="panel" data-action="restart">Restart</button><button data-service="panel" data-action="stop" class="danger">Dừng</button></div>
+      </article>
+      <article class="status-card">
+        <span>2 · Cloudflare Tunnel</span>
+        <strong id="panel-tunnel-status">Đang kiểm tra</strong>
+        <small id="panel-tunnel-url">Tunnel 3x-ui</small>
+        <div class="controls"><button data-service="panelTunnel" data-action="start">Chạy</button><button data-service="panelTunnel" data-action="restart">Restart</button><button data-service="panelTunnel" data-action="stop" class="danger">Dừng</button></div>
+      </article>
+      <article class="status-card">
+        <span>3 · Mode đang chạy</span>
+        <strong id="mode-status">Chưa cấu hình</strong>
+        <div class="controls"><button data-service="mode" data-action="start">Chạy</button><button data-service="mode" data-action="restart">Restart</button><button data-service="mode" data-action="stop" class="danger">Dừng</button></div>
+      </article>
+    </section>
+
+    <section class="module-card">
+      <div class="section-title">
+        <div><span class="section-label">KẾT NỐI VPN</span><h2>Triển khai theo mode</h2></div>
+        <span id="mode-badge" class="badge">CHƯA CẤU HÌNH</span>
+      </div>
+      <p class="hint">Mode 1/2 dùng origin <code>127.0.0.1:8888</code> và tunnel riêng, không ảnh hưởng tunnel 3x-ui.</p>
+      <nav class="tabs" aria-label="Chọn mode"><button class="tab active" data-tab="mode1" type="button">Mode 1</button><button class="tab" data-tab="mode2" type="button">Mode 2</button><button class="tab" data-tab="mode3" type="button">Mode 3</button></nav>
+
+      <form id="mode1-form" class="tab-pane active" data-pane="mode1">
+        <p class="notice">Quick Tunnel, WebSocket-only.</p>
+        <label>Fake SNI<select name="fakeSni" required><option value="api24-normal-alisg.tiktokv.com#Free Tiktok">Free Tiktok</option><option value="vnpt.theworkpc.com#Free Vina Ko Nen">Free Vina Ko Nen</option><option value="api24-normal-alisg.tiktokv.com#Free Tiktok,vnpt.theworkpc.com#Free Vina Ko Nen">Free Tiktok + Free Vina</option></select></label>
+        <label>Port link<select name="portMode"><option value="both">80 + 443</option><option value="443">Chỉ 443</option><option value="80">Chỉ 80</option></select></label>
+        <button class="primary" type="submit">Tạo Mode 1</button>
+        <div id="mode1-result" class="mode-result" hidden></div>
+      </form>
+
+      <form id="mode2-form" class="tab-pane" data-pane="mode2">
+        <p class="notice">Tạo Public Hostname route tới <code>http://127.0.0.1:8888</code> trong Cloudflare trước.</p>
+        <label>Public hostname<input name="domain" required placeholder="vpn.example.com" autocomplete="off"></label>
+        <label>Connector token<textarea name="token" rows="4" autocomplete="off"></textarea></label>
+        <div class="form-grid"><label>Fake SNI<select name="fakeSni" required><option value="api24-normal-alisg.tiktokv.com#Free Tiktok">Free Tiktok</option><option value="vnpt.theworkpc.com#Free Vina Ko Nen">Free Vina Ko Nen</option><option value="api24-normal-alisg.tiktokv.com#Free Tiktok,vnpt.theworkpc.com#Free Vina Ko Nen">Free Tiktok + Free Vina</option></select></label><label>Port link<select name="portMode"><option value="both">80 + 443</option><option value="443">Chỉ 443</option><option value="80">Chỉ 80</option></select></label><label>Transport<select name="transport"><option value="ws">WebSocket</option><option value="xhttp">xHTTP</option><option value="dual">WS + xHTTP</option></select></label><label class="xhttp-field">xHTTP mode<select name="xhttpMode"><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></label></div>
+        <button class="primary" type="submit">Tạo Mode 2</button>
+        <div id="mode2-result" class="mode-result" hidden></div>
+      </form>
+
+      <form id="mode3-form" class="tab-pane" data-pane="mode3">
+        <p class="notice">Tạo Public Hostname trên cùng Tunnel: VPN route đến <code>http://127.0.0.1:8080</code>; subscription route đến <code>http://127.0.0.1:2096</code>. Chọn WS + xHTTP vẫn chỉ dùng route VPN này. Panel route là tùy chọn và đến <code>http://127.0.0.1:2053</code>.</p>
+        <label>VPN public hostname<input name="domain" required placeholder="vpn.example.com" autocomplete="off"></label>
+        <label>Subscription public hostname<input name="subscriptionDomain" required placeholder="sub.example.com" autocomplete="off"></label>
+        <label>Panel public hostname <small>(tùy chọn)</small><input name="panelDomain" placeholder="panel.example.com" autocomplete="off"></label>
+        <label>Cloudflare Tunnel connector token<textarea name="token" rows="5" autocomplete="off"></textarea></label>
+        <div class="form-grid"><label>Fake SNI<select name="fakeSni" required><option value="api24-normal-alisg.tiktokv.com#Free Tiktok">Free Tiktok</option><option value="vnpt.theworkpc.com#Free Vina Ko Nen">Free Vina Ko Nen</option><option value="api24-normal-alisg.tiktokv.com#Free Tiktok,vnpt.theworkpc.com#Free Vina Ko Nen">Free Tiktok + Free Vina</option></select></label><label>Port link<select name="portMode"><option value="both">80 + 443</option><option value="443">Chỉ 443</option><option value="80">Chỉ 80</option></select></label><label>Transport<select name="transport"><option value="ws">WebSocket</option><option value="xhttp">xHTTP</option><option value="dual">WS + xHTTP</option></select></label><label class="xhttp-field">xHTTP mode<select name="xhttpMode"><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></label></div>
+        <button class="primary" type="submit">Tạo Mode 3</button>
+        <div id="mode3-result" class="mode-result" hidden></div>
+      </form>
+    </section>
+
+    <section class="module-card">
+      <div class="section-title compact"><div><h2>Nhật ký</h2><p class="section-copy">Dùng để kiểm tra panel tunnel và mode tunnel.</p></div><select id="log-target"><option value="all">Tất cả</option><option value="panel-tunnel">Tunnel 3x-ui</option><option value="tunnel">Tunnel Mode 1/2</option><option value="quick">Xray native</option><option value="panel">3x-ui</option></select></div>
+      <pre id="logs">Đang tải nhật ký...</pre>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

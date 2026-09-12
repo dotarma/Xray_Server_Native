@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+*.go text
+*.sh text
+*.ps1 text
+*.js text
+*.css text
+*.html text
+*.md text
+
+*.zip binary
+*.tar.gz binary
+*.dat binary
+*.pem binary
+*.db binary

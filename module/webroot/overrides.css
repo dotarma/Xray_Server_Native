@@ -1,0 +1,75 @@
+.controls .panel-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 8px;
+  order: 4;
+  margin-left: auto;
+  border-color: #74b5ff;
+  color: #ffffff;
+  background: #245d9b;
+}
+
+.mode-result { margin-top: 18px; }
+.mode-result-card { padding-top: 14px; border-top: 1px solid var(--line); }
+.mode-result-card + .mode-result-card { margin-top: 16px; }
+.mode-result-heading, .result-row, .result-copy-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mode-result-heading { margin-bottom: 10px; }
+.mode-result-heading strong { color: var(--text); }
+.mode-result-heading span, .result-row span, .result-copy-row span { color: var(--muted); font-size: 12px; }
+.result-row { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.result-row a { color: var(--accent); overflow-wrap: anywhere; text-align: right; }
+.result-copy-row { margin-top: 12px; margin-bottom: 6px; }
+.result-copy-row button { padding: 5px 8px; font-size: 11px; }
+.result-link { box-sizing: border-box; width: 100%; border: 1px solid #405a75; border-radius: 7px; padding: 10px; color: #c8e7ff; background: #0e1925; font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+
+.subscription-link {
+  margin: 0 0 12px;
+}
+
+.public-panel-link {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #2c4056;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.public-panel-link a { color: var(--accent); overflow-wrap: anywhere; text-align: right; }
+
+.subscription-link > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.subscription-link textarea {
+  width: 100%;
+  border: 1px solid #405a75;
+  border-radius: 7px;
+  padding: 10px;
+  color: #c8e7ff;
+  background: #0e1925;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  resize: vertical;
+}
+
+.subscription-link button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: var(--accent);
+  background: #253b53;
+  font-size: 11px;
+}
+
+@media (max-width: 480px) {
+  .controls .panel-link { display: inline-flex; }
+  .mode-result-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+}

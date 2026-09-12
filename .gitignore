@@ -1,0 +1,58 @@
+# Generated upstream payload. Recreate with tools/prepare-upstream-binaries.ps1
+# and the manager build command documented in README.md.
+/module/x-ui
+/module/cacert.pem
+/module/bin/*
+!/module/bin/.gitkeep
+/module/manager/android-mini-server-manager
+/manager/android-mini-server-manager
+
+# Build and IDE output.
+/manager/bin/
+/manager/vendor/
+/manager/*.test
+/manager/*.out
+/.vscode/
+/.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Mutable module state and local secrets.
+/module/db/
+/module/log/
+/module/run/
+/module/service.env
+/module/token.txt
+/module/panel-tunnel-token.txt
+/module/panel-credentials.txt
+/module/panel-base-path.txt
+/module/panel-settings.sig
+/module/deployment.json
+/module/deployments.json
+/module/quick-xray.json
+/module/mode2-preferences.json
+/module/mode3-preferences.json
+/module/resolv
+
+# Non-source inputs and generated output. Keep this tree outside the source
+# snapshot; it is local-only and can contain large binaries or sensitive data.
+/artifacts/
+/third_party/
+/.cache/
+*.zip
+*.tar.gz
+*.log
+*.pid
+*.tmp
+*.bak
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.crt
+.env
+.env.*
+!.env.example
+prepare.*.log
