@@ -1,6 +1,6 @@
 (() => {
   const $ = (selector) => document.querySelector(selector);
-  const modeNames = { mode1: 'Mode 1 - Quick Tunnel', mode2: 'Mode 2 - Domain rieng', mode3: 'Mode 3 - 3x-ui Tunnel', quick: 'Mode 1 - Quick Tunnel', none: 'Chua cau hinh' };
+  const modeNames = { mode1: 'Mode 1 - Quick Tunnel', mode2: 'Mode 2 - Domain rieng', mode3: 'Mode 3 - ifyUI Tunnel', quick: 'Mode 1 - Quick Tunnel', none: 'Chua cau hinh' };
   let moduleDir = '', toastTimer;
 
   function toast(message, error = false) {
@@ -86,7 +86,7 @@
     const data = await bridge('status'); state('#panel-status', data.panel); state('#panel-tunnel-status', data.panelTunnel);
     const nativeMode = data.activeMode === 'mode1' || data.activeMode === 'mode2' ? data.activeMode : 'none'; const running = data.quickServer.running || data.tunnel.running;
     $('#mode-status').textContent = nativeMode === 'none' || !running ? 'Chua chay Mode 1/2' : `${modeNames[nativeMode]} - dang chay`; $('#mode-status').style.color = running ? 'var(--green)' : 'var(--yellow)';
-    $('#panel-link').href = data.panelUrl || 'http://127.0.0.1:2053/'; $('#panel-card-link').href = data.panelUrl || 'http://127.0.0.1:2053/'; $('#panel-tunnel-url').textContent = data.panelTunnelUrl || 'Tunnel 3x-ui chua cau hinh'; renderResults(data.deployments);
+    $('#panel-link').href = data.panelUrl || 'http://127.0.0.1:2053/'; $('#panel-card-link').href = data.panelUrl || 'http://127.0.0.1:2053/'; $('#panel-tunnel-url').textContent = data.panelTunnelUrl || 'Tunnel ifyUI chua cau hinh'; renderResults(data.deployments);
     const badge = $('#mode-badge'); badge.textContent = modeNames[data.deployment?.mode || nativeMode] || 'CHUA CAU HINH'; badge.className = `badge ${data.deployment?.mode || nativeMode || 'none'}`;
     applySavedConfig(data.saved); if (withLogs) await logs();
   }
