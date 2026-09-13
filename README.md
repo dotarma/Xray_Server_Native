@@ -181,10 +181,9 @@ Keep changes small, run `go test ./...`, run shell syntax checks, and do not
 commit tokens, passwords, device databases or generated binaries without
 recording their provenance and licenses.
 
-GitHub Actions builds and tests the manager on every pull request, produces a
-non-flashable validation ZIP, and attaches an SPDX SBOM plus Go module
-inventory. To build a flashable module, run the `CI` workflow manually and
-download the resulting `ifyUI-module-<commit>` artifact. The reviewed curl CA
-Extract SHA-256 is prefilled; replace it only after independently verifying a
-new value. See [SECURITY.md](SECURITY.md) for release and dependency-update
-controls.
+GitHub Actions only runs manually. Enter a semantic version and choose `debug`
+or `release`: it produces
+`XSN_v<version>_<channel>_sha256_<commit>.zip`. `release` also creates or
+updates the matching GitHub Release. The reviewed curl CA Extract SHA-256 is
+prefilled; replace it only after independently verifying a new value. See
+[SECURITY.md](SECURITY.md) for release and dependency-update controls.

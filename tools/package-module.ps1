@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [switch]$AllowNoBinaries,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [string]$OutputFileName,
+    [string]$ModuleVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,8 +47,25 @@ else {
     [System.IO.Path]::GetFullPath($OutputDirectory)
 }
 
+if (-not [string]::IsNullOrWhiteSpace($OutputFileName)) {
+    if ([System.IO.Path]::GetFileName($OutputFileName) -ne $OutputFileName -or
+        -not $OutputFileName.EndsWith('.zip', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'OutputFileName must be a ZIP filename without directory components.'
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($ModuleVersion) -and
+    $ModuleVersion -notmatch '^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?$') {
+    throw 'ModuleVersion must be a semantic version, for example 1.0.0.'
+}
+
 $stage = Join-Path $outputRoot ("stage-" + [guid]::NewGuid().ToString('N'))
-$zipPath = Join-Path $outputRoot ("xray-server-native-$version.zip")
+$zipFileName = if ([string]::IsNullOrWhiteSpace($OutputFileName)) {
+    "xray-server-native-$version.zip"
+}
+else {
+    $OutputFileName
+}
+$zipPath = Join-Path $outputRoot $zipFileName
 if (Test-Path -LiteralPath $zipPath) {
     throw "Package already exists: $zipPath. Pass -OutputDirectory with a new path to keep both packages."
 }
@@ -55,6 +74,15 @@ New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 try {
     Get-ChildItem -LiteralPath $moduleRoot -Force | Copy-Item -Destination $stage -Recurse -Force
+    if (-not [string]::IsNullOrWhiteSpace($ModuleVersion)) {
+        $stagedModuleProps = Join-Path $stage 'module.prop'
+        $stagedProperties = [System.IO.File]::ReadAllText($stagedModuleProps)
+        $updatedProperties = [regex]::Replace($stagedProperties, '(?m)^version=.*$', "version=$ModuleVersion")
+        if ($updatedProperties -eq $stagedProperties) {
+            throw "Missing version entry in staged module properties: $stagedModuleProps"
+        }
+        [System.IO.File]::WriteAllText($stagedModuleProps, $updatedProperties, (New-Object System.Text.UTF8Encoding($false)))
+    }
     @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_SOURCES.md') | ForEach-Object {
         $complianceFile = Join-Path $projectRoot $_
         if (-not (Test-Path -LiteralPath $complianceFile -PathType Leaf)) {
