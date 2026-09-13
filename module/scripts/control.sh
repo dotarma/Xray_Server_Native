@@ -90,6 +90,7 @@ command_stop() {
   stop_pid_file "$PANEL_TUNNEL_PID_FILE" "cloudflared"
   stop_pid_file "$QUICK_SERVER_PID_FILE" "xray-linux-arm64"
   stop_pid_file "$PANEL_PID_FILE" "x-ui"
+  stop_pid_file "$MANAGER_PID_FILE" "android-mini-server-manager"
 }
 
 command_start_mode() {

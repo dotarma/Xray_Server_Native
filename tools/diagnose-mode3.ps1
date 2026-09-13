@@ -1,24 +1,63 @@
-param([switch]$Public)
-$ErrorActionPreference='Stop'
-$cfg=(adb shell "su -mm -c 'cat /data/adb/modules/android-mini-server-native/bin/config.json'" | Out-String) | ConvertFrom-Json
-$ib=$cfg.inbounds | Where-Object protocol -eq vless | Select-Object -First 1
-$stream=@{network='ws';security='none';sockopt=@{domainStrategy='UseIPv4'};wsSettings=@{path=$ib.streamSettings.wsSettings.path;host=$ib.streamSettings.wsSettings.host}}
-$address='127.0.0.1'
-$port=$ib.port
-if($Public){
-    $address='api24-normal-alisg.tiktokv.com'
-    $port=443
-    $stream.security='tls'
-    $stream.tlsSettings=@{serverName=$ib.streamSettings.wsSettings.host;fingerprint='chrome';alpn=@('http/1.1')}
+[CmdletBinding()]
+param(
+    [switch]$Public,
+    [ValidateSet('ws', 'xhttp')]
+    [string]$Transport = 'ws'
+)
+
+$ErrorActionPreference = 'Stop'
+$modulePath = '/data/adb/modules/android-mini-server-native'
+$deploymentText = adb shell "su -mm -c 'cat $modulePath/deployment.json'" | Out-String
+if ([string]::IsNullOrWhiteSpace($deploymentText)) {
+    throw 'No saved Mode 3 deployment was found on the device.'
 }
-$client=@{
-    log=@{loglevel='debug'}
-    dns=@{servers=@('1.1.1.1','8.8.8.8');queryStrategy='UseIPv4'}
-    inbounds=@(@{listen='127.0.0.1';port=18090;protocol='http';settings=@{}})
-    routing=@{rules=@(@{type='field';network='udp';port='53';outboundTag='dns-direct'})}
-    outbounds=@(@{protocol='vless';settings=@{vnext=@(@{address=$address;port=$port;users=@(@{id=$ib.settings.clients[0].id;encryption='none'})})};streamSettings=$stream},@{tag='dns-direct';protocol='freedom';settings=@{}})
+$deployment = $deploymentText | ConvertFrom-Json
+if ($deployment.mode -ne 'mode3') {
+    throw "Saved deployment is '$($deployment.mode)', not Mode 3."
 }
-$temp=Join-Path $env:TEMP 'mini-server-mode3-diagnostic.json'
-[IO.File]::WriteAllText($temp,($client|ConvertTo-Json -Depth 20),(New-Object Text.UTF8Encoding($false)))
-adb push $temp /data/local/tmp/mini-server-mode3-diagnostic.json
-Remove-Item -LiteralPath $temp
+
+$transport = if ($deployment.transport -eq 'dual') { $Transport } else { $deployment.transport }
+$path = $deployment.path
+$stream = @{
+    network = $transport
+    security = 'none'
+    sockopt = @{ domainStrategy = 'UseIPv4' }
+}
+if ($transport -eq 'xhttp') {
+    $stream.xhttpSettings = @{ path = $path; mode = $deployment.xhttpMode }
+} else {
+    $stream.wsSettings = @{ path = $path; host = $deployment.host }
+}
+
+$address = '127.0.0.1'
+$port = if ($deployment.originPort) { [int]$deployment.originPort } else { 8080 }
+if ($Public) {
+    $address = $deployment.host
+    $port = 443
+    $stream.security = 'tls'
+    $alpn = if ($transport -eq 'xhttp') { @('h3', 'h2') } else { @('http/1.1') }
+    $stream.tlsSettings = @{ serverName = $deployment.host; fingerprint = 'chrome'; alpn = $alpn }
+}
+
+$client = @{
+    log = @{ loglevel = 'debug' }
+    dns = @{ servers = @('1.1.1.1', '8.8.8.8'); queryStrategy = 'UseIPv4' }
+    inbounds = @(@{ listen = '127.0.0.1'; port = 18090; protocol = 'http'; settings = @{} })
+    outbounds = @(
+        @{
+            protocol = 'vless'
+            settings = @{ vnext = @(@{ address = $address; port = $port; users = @(@{ id = $deployment.uuid; encryption = 'none' }) }) }
+            streamSettings = $stream
+        },
+        @{ tag = 'dns-direct'; protocol = 'freedom'; settings = @{} }
+    )
+}
+
+$temp = Join-Path ([IO.Path]::GetTempPath()) 'xray-server-native-mode3-diagnostic.json'
+try {
+    [IO.File]::WriteAllText($temp, ($client | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+    adb push $temp /data/local/tmp/xray-server-native-mode3-diagnostic.json
+}
+finally {
+    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
+}

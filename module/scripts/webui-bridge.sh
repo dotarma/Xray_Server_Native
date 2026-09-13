@@ -1,14 +1,13 @@
 #!/system/bin/sh
 
-# This bridge is invoked only by KernelSU's module WebUI. It keeps panel
-# credentials inside the root shell and forwards a small JSON request to the
-# local manager. The WebUI never needs to read token.txt or panel credentials.
+# This bridge is invoked only by KernelSU's module WebUI. It forwards small
+# JSON requests to the loopback manager as root; the WebUI never reads
+# token.txt or panel credentials.
 
 MODDIR=${0%/*}
 MODDIR=${MODDIR%/scripts}
 STATE_DIR=$MODDIR
 CONFIG_FILE=$STATE_DIR/service.env
-CREDENTIALS_FILE=$STATE_DIR/panel-credentials.txt
 RUN_DIR=$STATE_DIR/run
 KSU_BUSYBOX=/data/adb/ksu/bin/busybox
 if [ ! -x "$KSU_BUSYBOX" ]; then
@@ -31,11 +30,6 @@ get_config_value() {
   [ -n "$value" ] && printf '%s\n' "$value" || printf '%s\n' "$fallback"
 }
 
-get_secret_value() {
-  key=$1
-  $KSU_BUSYBOX sed -n "s/^${key}=//p" "$CREDENTIALS_FILE" 2>/dev/null | $KSU_BUSYBOX tail -n 1
-}
-
 decode_payload() {
   encoded=$1
   [ -n "$encoded" ] || return 1
@@ -46,8 +40,6 @@ request() {
   method=$1
   endpoint=$2
   payload=$3
-  username=$(get_secret_value username)
-  password=$(get_secret_value password)
   manager_port=$(get_config_value MANAGER_PORT 2036)
   url="http://127.0.0.1:${manager_port}${endpoint}"
   if [ "$method" = GET ]; then

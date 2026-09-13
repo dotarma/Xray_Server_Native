@@ -46,9 +46,9 @@ const (
 )
 
 var (
-	domainPattern = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	pathPattern   = regexp.MustCompile(`^/[A-Za-z0-9._~-]{1,96}$`)
-	idPattern     = regexp.MustCompile(`^[a-fA-F0-9-]{36}$`)
+	domainPattern        = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+	quickHostnamePattern = regexp.MustCompile(`https://([a-z0-9-]+\.trycloudflare\.com)`)
+	idPattern            = regexp.MustCompile(`^[a-fA-F0-9-]{36}$`)
 )
 
 type manager struct {
@@ -355,11 +355,11 @@ func (m *manager) handleTunnelToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	err := m.saveTunnelToken(strings.TrimSpace(input.Token), "named")
 	if err == nil {
 		_, err = m.control("restart-tunnel")
 	}
-	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: err.Error()})
 		return
@@ -1530,7 +1530,7 @@ func hostnameFromLog(path string) string {
 	if err != nil {
 		return ""
 	}
-	match := regexp.MustCompile(`https://([a-z0-9-]+\.trycloudflare\.com)`).FindAllStringSubmatch(string(data), -1)
+	match := quickHostnamePattern.FindAllStringSubmatch(string(data), -1)
 	if len(match) == 0 {
 		return ""
 	}
@@ -2200,8 +2200,10 @@ func buildVLESSLinks(item *deployment) []string {
 		transports = []string{"ws", "xhttp"}
 	}
 	portMode := normalizePortMode(item.PortMode)
-	links := []string{}
-	for _, rawEntry := range strings.Split(item.FakeSNI, ",") {
+	ports := portsForMode(portMode)
+	entries := strings.Split(item.FakeSNI, ",")
+	links := make([]string, 0, len(entries)*len(transports)*len(ports))
+	for _, rawEntry := range entries {
 		sni, remark, ok := splitFakeSNI(rawEntry)
 		if !ok {
 			continue
@@ -2214,7 +2216,7 @@ func buildVLESSLinks(item *deployment) []string {
 			label = "[" + item.CountryCode + "] " + label
 		}
 		for _, transport := range transports {
-			for _, port := range portsForMode(portMode) {
+			for _, port := range ports {
 				values := url.Values{}
 				values.Set("encryption", "none")
 				values.Set("type", transport)
@@ -2364,6 +2366,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		return errors.New("Invalid request body.")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return errors.New("Invalid request body.")
 	}
 	return nil

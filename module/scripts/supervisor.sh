@@ -43,7 +43,11 @@ while :; do
   }
 
   load_config
-  ensure_state_dirs
+  if ! ensure_state_dirs; then
+    log_line "state initialization failed; retrying"
+    sleep 5
+    continue
+  fi
 
   if is_valid_interval "$SUPERVISOR_INTERVAL"; then
     interval=$SUPERVISOR_INTERVAL
@@ -56,8 +60,8 @@ while :; do
   start_panel_demux
   start_panel_tunnel
   if is_true "$MODE_ENABLED"; then
-  start_quick_server
-  start_native_demux
+    start_quick_server
+    start_native_demux
     start_tunnel
   else
     stop_pid_file "$TUNNEL_PID_FILE" "cloudflared"

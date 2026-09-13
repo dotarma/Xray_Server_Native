@@ -6,7 +6,7 @@
 Android boot
   -> Magisk late-start service.sh or KernelSU initrc service
   -> supervisor.sh waits for sys.boot_completed=1
-  -> android-mini-server-manager on 127.0.0.1:2081
+  -> android-mini-server-manager on 127.0.0.1:2036
   -> x-ui process
        -> Xray child process managed by 3x-ui
   -> optional cloudflared process
@@ -52,25 +52,26 @@ with `control.sh set-admin`.
 ## Manager model
 
 `android-mini-server-manager` is a statically-linked Go ARM64 executable that
-serves its original web UI only on `127.0.0.1:2081`. It authenticates with the
+serves its original web UI only on `127.0.0.1:2036`. It authenticates with the
 root-only 3x-ui credential file and calls `control.sh` for lifecycle actions.
-It creates exactly one manager-owned inbound, tagged
-`android-mini-server-vless-ws`; existing user-created inbounds are not modified.
+Native Modes 1 and 2 use a separate Xray configuration and never modify
+3x-ui inbounds. Mode 3 identifies only its own VLESS inbounds by tag and
+persisted UUID/path; existing user-created inbounds are not modified.
 
 For a temporary functional test it starts an independent Xray VLESS-WebSocket
-listener on `127.0.0.1:18080`, then starts cloudflared in Quick Tunnel mode and
+listener on `127.0.0.1:8888`, then starts cloudflared in Quick Tunnel mode and
 waits for the generated `trycloudflare.com` hostname. It does not call the
 3x-ui API in this mode. For a private domain it
-uses the Cloudflare API to create a remotely-managed tunnel, set ingress,
-upsert proxied CNAME records, then persists only the connector token. The
-user-provided Cloudflare API token is not stored by the module.
+accepts the connector token for a remotely-managed tunnel whose routes were
+created by the user in Cloudflare Zero Trust, then persists only that connector
+token. No Cloudflare API credential is accepted or stored by the module.
 
 On KernelSU, `webroot/index.html` is opened by the Manager as the module's
 embedded WebUI. The UI calls `scripts/webui-bridge.sh` through the official
-KernelSU JavaScript bridge. The bridge reads the root-only panel credential
-file itself and forwards JSON to the loopback manager, so sensitive files are
-not exposed to page JavaScript. The same backend remains available through
-`127.0.0.1:2081` for Magisk, whose manager has no native module WebUI surface.
+KernelSU JavaScript bridge. The root bridge forwards JSON to the loopback
+manager, so sensitive files remain outside page JavaScript. The same backend
+remains available through
+`127.0.0.1:2036` for Magisk, whose manager has no native module WebUI surface.
 
 ## Tunnel model
 

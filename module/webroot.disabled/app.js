@@ -28,7 +28,9 @@
     if (data.error) throw new Error(data.error); return data;
   }
   function copy(value, message) {
-    navigator.clipboard?.writeText(value).catch(() => { const area = document.createElement('textarea'); area.value = value; document.body.append(area); area.select(); document.execCommand('copy'); area.remove(); });
+    const fallback = () => { const area = document.createElement('textarea'); area.value = value; document.body.append(area); area.select(); document.execCommand('copy'); area.remove(); };
+    const write = navigator.clipboard?.writeText?.(value);
+    if (write?.catch) write.catch(fallback); else fallback();
     toast(message);
   }
   function state(selector, service) {
