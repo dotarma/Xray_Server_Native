@@ -9,6 +9,7 @@ on:
       ca_cert_sha256:
         description: Verified SHA-256 for https://curl.se/ca/cacert.pem
         required: true
+        default: f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9
         type: string
 
 permissions:
