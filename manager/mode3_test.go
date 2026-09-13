@@ -248,6 +248,76 @@ func TestManagerAuthenticationAndSameOrigin(t *testing.T) {
 	}
 }
 
+func TestHealthIncludesRequestIDAndSchema(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "panel-credentials.txt"), []byte("username=admin\npassword=secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &manager{stateDir: stateDir}
+	if err := m.migrateState(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:2036/healthz", nil)
+	request.SetBasicAuth("admin", "secret")
+	response := httptest.NewRecorder()
+	m.handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want HTTP 200", response.Code)
+	}
+	if response.Header().Get("X-Request-ID") == "" {
+		t.Fatal("health response did not include a request ID")
+	}
+	var body struct {
+		Status      string `json:"status"`
+		StateSchema int    `json:"stateSchema"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "ok" || body.StateSchema != currentStateSchemaVersion {
+		t.Fatalf("unexpected health body: %+v", body)
+	}
+}
+
+func TestStateMigrationIsIdempotentAndRejectsFutureSchema(t *testing.T) {
+	stateDir := t.TempDir()
+	tokenPath := filepath.Join(stateDir, "token.txt")
+	if err := os.WriteFile(tokenPath, []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &manager{stateDir: stateDir}
+	if err := m.migrateState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.migrateState(); err != nil {
+		t.Fatalf("second migration failed: %v", err)
+	}
+	schemaData, err := os.ReadFile(filepath.Join(stateDir, "state-schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema stateSchema
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Version != currentStateSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", schema.Version, currentStateSchemaVersion)
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("token mode = %o, want 600", info.Mode().Perm())
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "state-schema.json"), []byte(`{"version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.migrateState(); err == nil {
+		t.Fatal("future schema was accepted")
+	}
+}
+
 func testBackend(t *testing.T, response string) net.Listener {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

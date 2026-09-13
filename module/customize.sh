@@ -25,7 +25,7 @@ rm -rf "$MODPATH/webroot"
 for previous in "$ACTIVE_MODULE_DIR" "$LEGACY_STATE_DIR"; do
   [ "$previous" = "$MODPATH" ] && continue
   [ -d "$previous" ] || continue
-  for entry in db log service.env token.txt panel-tunnel-token.txt resolv panel-credentials.txt panel-base-path.txt panel-settings.sig deployment.json deployments.json quick-xray.json mode2-preferences.json mode3-preferences.json; do
+  for entry in db log service.env token.txt panel-tunnel-token.txt resolv panel-credentials.txt panel-base-path.txt panel-settings.sig deployment.json deployments.json quick-xray.json mode2-preferences.json mode3-preferences.json state-schema.json; do
     [ -e "$MODPATH/$entry" ] || cp -af "$previous/$entry" "$MODPATH/" 2>/dev/null
   done
 done
@@ -85,7 +85,7 @@ if [ -f "$MODPATH/bin/xray-linux-arm64" ]; then
 fi
 
 chmod 700 "$MODPATH/db" "$MODPATH/log" "$MODPATH/run" 2>/dev/null
-chmod 600 "$MODPATH/service.env" "$MODPATH/token.txt" "$MODPATH/panel-tunnel-token.txt" "$MODPATH/panel-credentials.txt" "$MODPATH/deployment.json" "$MODPATH/deployments.json" "$MODPATH/quick-xray.json" "$MODPATH/mode2-preferences.json" "$MODPATH/mode3-preferences.json" 2>/dev/null
+chmod 600 "$MODPATH/service.env" "$MODPATH/token.txt" "$MODPATH/panel-tunnel-token.txt" "$MODPATH/panel-credentials.txt" "$MODPATH/deployment.json" "$MODPATH/deployments.json" "$MODPATH/quick-xray.json" "$MODPATH/mode2-preferences.json" "$MODPATH/mode3-preferences.json" "$MODPATH/state-schema.json" 2>/dev/null
 chmod 644 "$MODPATH/resolv" 2>/dev/null
 
 if mkdir -p /data/xui 2>/dev/null && mount -o bind "$MODPATH" /data/xui 2>/dev/null; then

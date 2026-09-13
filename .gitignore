@@ -33,6 +33,7 @@ Thumbs.db
 /module/quick-xray.json
 /module/mode2-preferences.json
 /module/mode3-preferences.json
+/module/state-schema.json
 /module/resolv
 
 # Non-source inputs and generated output. Keep this tree outside the source

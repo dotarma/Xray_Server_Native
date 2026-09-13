@@ -56,6 +56,11 @@ serves its original web UI only on `127.0.0.1:2036`. Every route requires HTTP
 Basic authentication against the root-only 3x-ui credential file; mutating
 requests also require a matching loopback Origin header. It calls `control.sh`
 for lifecycle actions without returning credentials in its status response.
+The HTTP composition, request logging, and persistent-state migration live in
+separate manager source files. Each response carries `X-Request-ID`; the
+manager log emits JSON events containing that ID, method, path, status, and
+duration without request bodies or secrets. `GET /healthz` is authenticated and
+reports the running build and state-schema version.
 Native Modes 1 and 2 use a separate Xray configuration and never modify
 3x-ui inbounds. Mode 3 identifies only its own VLESS inbounds by tag and
 persisted UUID/path; existing user-created inbounds are not modified.
@@ -96,6 +101,15 @@ it creates PID files for 3x-ui, cloudflared, and the manager, removes stale PID
 files, and restarts an exited process on the next pass. Service logs rotate at
 1 MiB by default and retain one `.1` copy. Module disable is honored without a
 reboot by stopping all managed processes when the `disable` marker appears.
+
+## State migrations
+
+The manager records its completed migration level in root-only
+`state-schema.json`. Schema writes and all manager-owned JSON, token, and
+service configuration updates use a same-directory temporary file followed by
+an atomic rename. A future schema is rejected rather than guessed, so an older
+binary cannot overwrite newer state. The initial schema migration only secures
+existing state-file permissions and is safe to repeat.
 
 The 3x-ui process owns Xray. The module should not independently kill a child
 Xray process during normal shutdown because that would bypass 3x-ui cleanup.

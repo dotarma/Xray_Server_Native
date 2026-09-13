@@ -48,11 +48,18 @@ jobs:
         run: |
           mkdir -p ../module/manager
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../module/manager/android-mini-server-manager .
-          file ../module/manager/android-mini-server-manager
+          test -s ../module/manager/android-mini-server-manager
 
       - name: Create non-flashable validation package
         run: |
           mkdir -p artifacts/ci-package
+          (
+            cd manager
+            go list -m -json all
+          ) > artifacts/ci-package/go-module-inventory.json
+          cat > artifacts/ci-package/sbom.spdx.json <<EOF
+          {"SPDXID":"SPDXRef-DOCUMENT","spdxVersion":"SPDX-2.3","creationInfo":{"creators":["Tool: GitHub Actions"],"created":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"},"dataLicense":"CC0-1.0","documentNamespace":"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}","name":"xray-server-native-${GITHUB_SHA}","packages":[{"SPDXID":"SPDXRef-Package","name":"xray-server-native-manager","versionInfo":"${GITHUB_SHA}","downloadLocation":"NOASSERTION","filesAnalyzed":false,"licenseConcluded":"GPL-3.0-or-later","licenseDeclared":"GPL-3.0-or-later"}],"relationships":[{"spdxElementId":"SPDXRef-DOCUMENT","relationshipType":"DESCRIBES","relatedSpdxElement":"SPDXRef-Package"}]}
+          EOF
           zip -qr artifacts/ci-package/xray-server-native-ci.zip module LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_SOURCES.md LICENSES
 
       - name: Upload validation artifacts

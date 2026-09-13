@@ -197,20 +197,15 @@ func main() {
 		*webRoot = filepath.Join(*moduleDir, "manager", "web")
 	}
 	m := &manager{moduleDir: *moduleDir, stateDir: *stateDir, webRoot: *webRoot}
+	if err := m.migrateState(); err != nil {
+		fmt.Fprintln(os.Stderr, "state migration:", err)
+		os.Exit(1)
+	}
 	go m.reconcileQuickDeployment()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/status", m.handleStatus)
-	mux.HandleFunc("/api/services", m.handleServices)
-	mux.HandleFunc("/api/tunnel/token", m.handleTunnelToken)
-	mux.HandleFunc("/api/deploy/quick", m.handleQuickDeploy)
-	mux.HandleFunc("/api/deploy/mode2", m.handleModeTwoDeploy)
-	mux.HandleFunc("/api/deploy/mode3", m.handleModeThreeDeploy)
-	mux.HandleFunc("/api/logs", m.handleLogs)
-	mux.HandleFunc("/", m.handleStatic)
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           securityHeaders(m.requirePanelAuth(m.requireSameOrigin(mux))),
+		Handler:           m.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       25 * time.Second,
 		WriteTimeout:      90 * time.Second,
@@ -1187,7 +1182,7 @@ func (m *manager) configureNativeServer(input nativeTunnelInput, mode string) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(m.stateDir, "quick-xray.json"), data, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(m.stateDir, "quick-xray.json"), data, 0o600); err != nil {
 		return nil, err
 	}
 	return &deployment{
@@ -1483,7 +1478,7 @@ func (m *manager) saveTunnelToken(token, mode string) error {
 	if !validSecret(token, 32, 4096) {
 		return errors.New("Tunnel token is malformed.")
 	}
-	if err := os.WriteFile(filepath.Join(m.stateDir, "token.txt"), []byte(token+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(m.stateDir, "token.txt"), []byte(token+"\n"), 0o600); err != nil {
 		return err
 	}
 	return m.setServiceValues(map[string]string{"TUNNEL_ENABLED": "true", "TUNNEL_MODE": mode})
@@ -1493,7 +1488,7 @@ func (m *manager) savePanelTunnelToken(token string) error {
 	if !validSecret(token, 32, 4096) {
 		return errors.New("Cloudflare Tunnel connector token is malformed.")
 	}
-	return os.WriteFile(filepath.Join(m.stateDir, "panel-tunnel-token.txt"), []byte(token+"\n"), 0o600)
+	return writeFileAtomic(filepath.Join(m.stateDir, "panel-tunnel-token.txt"), []byte(token+"\n"), 0o600)
 }
 
 func (m *manager) savedToken(path string) string {
@@ -1544,14 +1539,6 @@ func readJSONFile(path string, target any) error {
 	return json.Unmarshal(data, target)
 }
 
-func writeJSONFile(path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
-}
-
 func (m *manager) setServiceValues(next map[string]string) error {
 	path := filepath.Join(m.stateDir, "service.env")
 	data, err := os.ReadFile(path)
@@ -1578,7 +1565,7 @@ func (m *manager) setServiceValues(next map[string]string) error {
 			lines = append(lines, key+"="+value)
 		}
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 func (m *manager) waitForQuickHostname(timeout time.Duration) (string, error) {
@@ -1652,7 +1639,7 @@ func (m *manager) saveDeployment(item *deployment) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(m.stateDir, "deployment.json"), data, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(m.stateDir, "deployment.json"), data, 0o600); err != nil {
 		return err
 	}
 	registry := m.loadDeployments()
@@ -2386,7 +2373,7 @@ func validSecret(value string, min, max int) bool {
 	value = strings.TrimSpace(value)
 	return len(value) >= min && len(value) <= max && !strings.ContainsAny(value, "\r\n\x00")
 }
-func validPort(value int) bool  { return value >= 1 && value <= 65535 }
+func validPort(value int) bool { return value >= 1 && value <= 65535 }
 func normalizeLabel(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

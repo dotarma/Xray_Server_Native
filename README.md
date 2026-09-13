@@ -180,3 +180,8 @@ KernelSU.
 Keep changes small, run `go test ./...`, run shell syntax checks, and do not
 commit tokens, passwords, device databases or generated binaries without
 recording their provenance and licenses.
+
+GitHub Actions builds and tests the manager on every pull request, produces a
+non-flashable validation ZIP, and attaches an SPDX SBOM plus Go module
+inventory. See [SECURITY.md](SECURITY.md) for release and dependency-update
+controls.
