@@ -10,9 +10,12 @@
   function exec(command) {
     return new Promise((resolve, reject) => {
       if (!window.ksu?.exec) return reject(new Error('KernelSU WebUI API is unavailable.'));
+      const controller = new AbortController();
+      const timer = setTimeout(() => { controller.abort(); }, 95000);
       const callback = `ams_${Date.now()}_${Math.random()}`;
-      window[callback] = (errno, stdout, stderr) => { delete window[callback]; errno ? reject(new Error(stderr || 'Root command failed.')) : resolve(stdout || ''); };
-      try { window.ksu.exec(command, '{}', callback); } catch (error) { delete window[callback]; reject(error); }
+      window[callback] = (errno, stdout, stderr) => { clearTimeout(timer); delete window[callback]; if (controller.signal.aborted) return; errno ? reject(new Error(stderr || 'Root command failed.')) : resolve(stdout || ''); };
+      controller.signal.addEventListener('abort', () => { delete window[callback]; reject(new Error('Yeu cau qua thoi gian. Kiem tra trang thai dich vu roi thu lai.')); });
+      try { window.ksu.exec(command, '{}', callback); } catch (error) { clearTimeout(timer); delete window[callback]; reject(error); }
     });
   }
   function encode(value) {
@@ -46,7 +49,7 @@
       }
       if (item.subscriptionUrl) {
         const row = make('div', undefined, 'result-copy-row'); row.append(make('span', 'Link subscription'));
-        const button = make('button', 'Copy sub'); button.type = 'button'; button.addEventListener('click', () => copy(item.subscriptionUrl, 'Da sao chep link subscription.')); row.append(button); card.append(row);
+        const button = make('button', 'Copy Sub Link'); button.type = 'button'; button.addEventListener('click', () => copy(item.subscriptionUrl, 'Da sao chep link subscription.')); row.append(button); card.append(row);
         const area = make('textarea', undefined, 'result-link'); area.rows = 2; area.readOnly = true; area.value = item.subscriptionUrl; card.append(area);
       }
       const links = item.links?.length ? item.links : item.link ? [item.link] : [];

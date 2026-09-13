@@ -24,10 +24,10 @@
     </header>
 
     <section class="status-grid" aria-label="Trạng thái dịch vụ">
-      <article class="status-card">
+      <article class="status-card status-card-panel">
         <span>1 · 3x-ui</span>
         <strong id="panel-status">Đang kiểm tra</strong>
-        <div class="panel-credentials"><span>User: <b id="panel-user">-</b></span><span>Password: <b id="panel-password">-</b> <button id="copy-password" type="button">Copy pass</button></span></div>
+        <div class="panel-credentials"><span>User: <b id="panel-user">-</b></span><span class="credential-row">Password: <b id="panel-password">-</b><button id="copy-password" type="button">Copy pass</button></span></div>
         <div class="controls"><a id="panel-card-link" class="panel-link" href="http://127.0.0.1:2053/" target="_blank" rel="noreferrer">Mở 3x-ui</a><button data-service="panel" data-action="start">Chạy</button><button data-service="panel" data-action="restart">Restart</button><button data-service="panel" data-action="stop" class="danger">Dừng</button></div>
       </article>
       <article class="status-card">
@@ -48,11 +48,11 @@
         <div><span class="section-label">KẾT NỐI VPN</span><h2>Triển khai theo mode</h2></div>
         <span id="mode-badge" class="badge">CHƯA CẤU HÌNH</span>
       </div>
-      <p class="hint">Mode 1/2 dùng origin <code>127.0.0.1:8888</code> và tunnel riêng, không ảnh hưởng tunnel 3x-ui.</p>
+      <p class="hint">Mode 1 và 2 chạy với Cloudflare Tunnel riêng, Mode 3 chạy riêng 3x-ui với Cloudflare Tunnel riêng ko ảnh hưởng đến nhau.</p>
       <nav class="tabs" aria-label="Chọn mode"><button class="tab active" data-tab="mode1" type="button">Mode 1</button><button class="tab" data-tab="mode2" type="button">Mode 2</button><button class="tab" data-tab="mode3" type="button">Mode 3</button></nav>
 
       <form id="mode1-form" class="tab-pane active" data-pane="mode1">
-        <p class="notice">Quick Tunnel, WebSocket-only.</p>
+        <p class="notice">Quick Tunnel, WS-only, ko cần domain.</p>
         <label>Fake SNI<select name="fakeSni" required><option value="api24-normal-alisg.tiktokv.com#Free Tiktok">Free Tiktok</option><option value="vnpt.theworkpc.com#Free Vina Ko Nen">Free Vina Ko Nen</option><option value="api24-normal-alisg.tiktokv.com#Free Tiktok,vnpt.theworkpc.com#Free Vina Ko Nen">Free Tiktok + Free Vina</option></select></label>
         <label>Port link<select name="portMode"><option value="both">80 + 443</option><option value="443">Chỉ 443</option><option value="80">Chỉ 80</option></select></label>
         <button class="primary" type="submit">Tạo Mode 1</button>
@@ -73,6 +73,7 @@
         <label>VPN public hostname<input name="domain" required placeholder="vpn.example.com" autocomplete="off"></label>
         <label>Subscription public hostname<input name="subscriptionDomain" required placeholder="sub.example.com" autocomplete="off"></label>
         <label>Panel public hostname <small>(tùy chọn)</small><input name="panelDomain" placeholder="panel.example.com" autocomplete="off"></label>
+        <label>Tên server <small>(dòng đầu subscription)</small><input name="serverName" placeholder="Vless5G" maxlength="64" autocomplete="off"></label>
         <label>Cloudflare Tunnel connector token<textarea name="token" rows="5" autocomplete="off"></textarea></label>
         <div class="form-grid"><label>Fake SNI<select name="fakeSni" required><option value="api24-normal-alisg.tiktokv.com#Free Tiktok">Free Tiktok</option><option value="vnpt.theworkpc.com#Free Vina Ko Nen">Free Vina Ko Nen</option><option value="api24-normal-alisg.tiktokv.com#Free Tiktok,vnpt.theworkpc.com#Free Vina Ko Nen">Free Tiktok + Free Vina</option></select></label><label>Port link<select name="portMode"><option value="both">80 + 443</option><option value="443">Chỉ 443</option><option value="80">Chỉ 80</option></select></label><label>Transport<select name="transport"><option value="ws">WebSocket</option><option value="xhttp">xHTTP</option><option value="dual">WS + xHTTP</option></select></label><label class="xhttp-field">xHTTP mode<select name="xhttpMode"><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></label></div>
         <button class="primary" type="submit">Tạo Mode 3</button>

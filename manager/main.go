@@ -33,7 +33,8 @@ const (
 	modeXHTTPInternalPort      = 38888
 	modeThreeWSInternalPort    = 28080
 	modeThreeXHTTPInternalPort = 38080
-	managerBuild               = "0.6.20"
+	modeThreeInfoPort          = 18081
+	managerBuild               = "1.0.0"
 	cloudflareAPI              = "https://api.cloudflare.com/client/v4"
 	maxRequestBytes            = 32 << 10
 	panelPortDefault           = 2053
@@ -82,6 +83,7 @@ type deployment struct {
 	SubscriptionURL  string   `json:"subscriptionUrl,omitempty"`
 	OriginPort       int      `json:"originPort,omitempty"`
 	ClientEmail      string   `json:"clientEmail,omitempty"`
+	ServerName       string   `json:"serverName,omitempty"`
 }
 
 type deploymentRegistry struct {
@@ -116,6 +118,7 @@ type modeThreePreferences struct {
 	PortMode           string `json:"portMode"`
 	Transport          string `json:"transport"`
 	XHTTPMode          string `json:"xhttpMode"`
+	ServerName         string `json:"serverName"`
 	TokenSaved         bool   `json:"tokenSaved"`
 }
 
@@ -169,6 +172,7 @@ type panelTunnelInput struct {
 	PortMode           string `json:"portMode"`
 	Transport          string `json:"transport"`
 	XHTTPMode          string `json:"xhttpMode"`
+	ServerName         string `json:"serverName"`
 }
 
 func main() {
@@ -320,9 +324,12 @@ func (m *manager) handleServices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: "Unsupported service action."})
 		return
 	}
-	m.mu.Lock()
+	if !m.mu.TryLock() {
+		writeJSON(w, http.StatusConflict, apiError{Error: "Another server operation is in progress. Wait for it to finish, then try again."})
+		return
+	}
+	defer m.mu.Unlock()
 	output, err := m.control(command)
-	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: userSafeCommandError(err, output)})
 		return
@@ -450,6 +457,7 @@ func (m *manager) handleModeThreeDeploy(w http.ResponseWriter, r *http.Request) 
 	input.PortMode = normalizePortMode(input.PortMode)
 	input.Transport = normalizeNativeTransport(input.Transport)
 	input.XHTTPMode = normalizeXHTTPMode(input.XHTTPMode)
+	input.ServerName = normalizeServerName(input.ServerName)
 	if input.Token == "" {
 		input.Token = m.savedToken(filepath.Join(m.stateDir, "panel-tunnel-token.txt"))
 	}
@@ -462,9 +470,15 @@ func (m *manager) handleModeThreeDeploy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	m.mu.Lock()
+	// Hold the same operation lock used by service controls so x-ui or the
+	// tunnel cannot be restarted halfway through an inbound deployment.
+	if !m.mu.TryLock() {
+		writeJSON(w, http.StatusConflict, apiError{Error: "Another server operation is in progress. Wait for it to finish, then try again."})
+		return
+	}
+	defer m.mu.Unlock()
+
 	deployed, err := m.deployModeThree(input)
-	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: err.Error()})
 		return
@@ -584,6 +598,9 @@ func (m *manager) deployModeTwo(input nativeTunnelInput) (*deployment, error) {
 }
 
 func (m *manager) deployModeThree(input panelTunnelInput) (*deployment, error) {
+	if _, err := m.control("start-panel"); err != nil {
+		return nil, errors.New("Could not start the local 3x-ui panel.")
+	}
 	item, err := m.configureModeThreeInbound(input)
 	if err != nil {
 		return nil, err
@@ -631,7 +648,7 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 	if err != nil {
 		return nil, err
 	}
-	if err := panel.login(); err != nil {
+	if err := panel.loginWithRetry(6, 500*time.Millisecond); err != nil {
 		return nil, errors.New("Could not authenticate to the local 3x-ui panel.")
 	}
 	if err := panel.ensureAndroidDNS(); err != nil {
@@ -684,18 +701,55 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 		}
 	}
 	if email == "" {
-		email = "android-mini-server-mode3-" + randomHex(5)
+		email = "Free"
 	}
+
+	// The intentionally unrouted information inbound is created before the
+	// working WS/xHTTP inbounds on a fresh install. It supplies the first,
+	// author-named subscription row without consuming a public tunnel route.
+	infoInbound := findModeThreeInfoInbound(items)
+	if infoInbound == nil {
+		exists, err := panel.clientExists(email)
+		if err != nil {
+			return nil, err
+		}
+		infoInbound = newModeThreeInfoInbound(uuid, email, input.ServerName, !exists)
+		if err := panel.addInbound(infoInbound); err != nil {
+			if errors.Is(err, errInboundPortInUse) {
+				return nil, errors.New("The reserved local information port is already in use. Move the conflicting 3x-ui inbound from port 18081 first.")
+			}
+			return nil, err
+		}
+		items, err = panel.listInbounds()
+		if err != nil {
+			return nil, err
+		}
+		infoInbound = findModeThreeInfoInbound(items)
+		if infoInbound == nil {
+			return nil, errors.New("3x-ui created the information inbound but it could not be read back.")
+		}
+	}
+	// Keep an existing information inbound in sync with the requested name.
+	// Client settings are retained because 3x-ui owns the canonical record.
+	existingInfoSettings := infoInbound["settings"]
+	applyModeThreeInfoInbound(infoInbound, uuid, email, input.ServerName, false)
+	if existingInfoSettings != nil {
+		infoInbound["settings"] = existingInfoSettings
+	}
+	if err := panel.updateInbound(intValue(infoInbound["id"]), infoInbound); err != nil {
+		return nil, err
+	}
+	if err := panel.attachClient(email, []int{intValue(infoInbound["id"])}); err != nil {
+		return nil, err
+	}
+
 	path := "/vless-" + randomHex(6)
 	if inbound != nil {
 		if existingPath := modeThreeWebSocketPath(inbound); existingPath != "" {
 			path = existingPath
 		}
 	}
-	_, label, _ := splitFakeSNI(input.FakeSNI)
-	if label == "" {
-		label = friendlySNIName(fakeSNIHost(input.FakeSNI))
-	}
+	sniBase := modeThreeSNIName(input.FakeSNI)
 
 	primaryTransport := input.Transport
 	if primaryTransport == "dual" {
@@ -705,8 +759,9 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 	if input.Transport == "dual" {
 		primaryPort = modeThreeWSInternalPort
 	}
+	primaryRemark := modeThreeInboundRemark(input.FakeSNI, primaryTransport)
 	if inbound == nil {
-		inbound = newModeThreeInbound(uuid, email, input.Domain, path, label, input.FakeSNI, primaryTransport, input.XHTTPMode, primaryPort, true)
+		inbound = newModeThreeInbound(uuid, email, input.Domain, path, primaryRemark, input.FakeSNI, primaryTransport, input.XHTTPMode, primaryPort, false)
 		if err := panel.addInbound(inbound); err != nil {
 			if errors.Is(err, errInboundPortInUse) {
 				return nil, errors.New("The required Mode 3 local port is already in use. Move or remove the conflicting 3x-ui inbound first.")
@@ -725,7 +780,7 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 		// The panel owns clients, quotas, expiry and Sub IDs after bootstrap.
 		// Re-running a matching endpoint keeps that client collection intact.
 		existingSettings := inbound["settings"]
-		applyModeThreeSettings(inbound, uuid, email, input.Domain, path, label, input.FakeSNI, primaryTransport, input.XHTTPMode, primaryPort, true)
+		applyModeThreeSettings(inbound, uuid, email, input.Domain, path, primaryRemark, input.FakeSNI, primaryTransport, input.XHTTPMode, primaryPort, false)
 		if existingSettings != nil {
 			inbound["settings"] = existingSettings
 		}
@@ -737,15 +792,19 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 			return nil, err
 		}
 	}
+	if err := panel.attachClient(email, []int{intValue(inbound["id"])}); err != nil {
+		return nil, err
+	}
 
 	if input.Transport == "dual" {
 		items, err = panel.listInbounds()
 		if err != nil {
 			return nil, err
 		}
+		companionRemark := modeThreeInboundRemark(input.FakeSNI, "xhttp")
 		companion := findModeThreeInbound(items, uuid, path, "xhttp")
 		if companion == nil {
-			companion = newModeThreeInbound(uuid, email, input.Domain, path, label, input.FakeSNI, "xhttp", input.XHTTPMode, modeThreeXHTTPInternalPort, false)
+			companion = newModeThreeInbound(uuid, email, input.Domain, path, companionRemark, input.FakeSNI, "xhttp", input.XHTTPMode, modeThreeXHTTPInternalPort, false)
 			if err := panel.addInbound(companion); err != nil {
 				if errors.Is(err, errInboundPortInUse) {
 					return nil, errors.New("The private xHTTP port for Mode 3 is already in use.")
@@ -762,7 +821,7 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 			return nil, errors.New("Could not create the private xHTTP inbound for Mode 3.")
 		}
 		existingSettings := companion["settings"]
-		applyModeThreeSettings(companion, uuid, email, input.Domain, path, label, input.FakeSNI, "xhttp", input.XHTTPMode, modeThreeXHTTPInternalPort, false)
+		applyModeThreeSettings(companion, uuid, email, input.Domain, path, companionRemark, input.FakeSNI, "xhttp", input.XHTTPMode, modeThreeXHTTPInternalPort, false)
 		if existingSettings != nil {
 			companion["settings"] = existingSettings
 		}
@@ -780,13 +839,26 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 	if err := panel.syncModeThreeHosts(uuid, input.Domain, input.FakeSNI, previous); err != nil {
 		return nil, err
 	}
-	subscriptionID := firstClientSubID(inbound)
+	// The client email is the name shown by 3x-ui to subscription users. Keep
+	// it short and stable instead of exposing an implementation-generated ID.
+	if email != "Free" {
+		if err := panel.renameClient(email, "Free"); err != nil {
+			return nil, err
+		}
+		email = "Free"
+	}
+	if input.ServerName != "" {
+		if err := panel.setSubscriptionTitle(input.ServerName); err != nil {
+			return nil, err
+		}
+	}
+	subscriptionID := firstClientSubID(infoInbound)
 	item := &deployment{
 		Mode:             "mode3",
 		Host:             input.Domain,
 		Path:             path,
 		UUID:             uuid,
-		Label:            label,
+		Label:            sniBase,
 		FakeSNI:          input.FakeSNI,
 		PortMode:         input.PortMode,
 		Transport:        input.Transport,
@@ -797,6 +869,7 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 		SubscriptionID:   subscriptionID,
 		OriginPort:       originPort,
 		ClientEmail:      email,
+		ServerName:       input.ServerName,
 	}
 	if input.PanelDomain != "" {
 		item.PanelURL = "https://" + input.PanelDomain + "/"
@@ -806,7 +879,7 @@ func (m *manager) configureModeThreeInbound(input panelTunnelInput) (*deployment
 	}
 	item.Links = buildVLESSLinks(item)
 	item.Link = firstLink(item.Links)
-	if err := panel.syncModeThreeExternalLinks(email, item.Links); err != nil {
+	if err := panel.syncModeThreeExternalLinks(email, modeThreeExternalLinks(item)); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -864,7 +937,18 @@ func findModeThreeInbound(items []map[string]any, uuid, path, transport string) 
 		if normalizeTransport(stringValue(stream["network"])) != transport || modeThreeWebSocketPath(item) != path {
 			continue
 		}
-		if uuid == "" || firstClientUUID(item) == uuid {
+		if uuid == "" || firstClientUUID(item) == "" || firstClientUUID(item) == uuid {
+			return item
+		}
+	}
+	return nil
+}
+
+func findModeThreeInfoInbound(items []map[string]any) map[string]any {
+	for _, item := range items {
+		if intValue(item["port"]) == modeThreeInfoPort &&
+			stringValue(item["protocol"]) == "vless" &&
+			stringValue(item["listen"]) == "127.0.0.1" {
 			return item
 		}
 	}
@@ -919,6 +1003,7 @@ func applyModeThreeSettings(item map[string]any, uuid, email, domain, path, labe
 	item["port"] = float64(originPort)
 	item["protocol"] = "vless"
 	item["tag"] = managerTag
+	item["subSortIndex"] = float64(2)
 	item["shareAddrStrategy"] = "custom"
 	item["shareAddr"] = fakeSNIHost(fakeSNI)
 	clients := []any{}
@@ -945,6 +1030,39 @@ func applyModeThreeSettings(item map[string]any, uuid, email, domain, path, labe
 		stream["wsSettings"] = map[string]any{"acceptProxyProtocol": false, "path": path, "host": domain, "headers": map[string]any{}, "heartbeatPeriod": float64(0)}
 	}
 	item["streamSettings"] = stream
+	item["sniffing"] = map[string]any{"enabled": false}
+}
+
+// newModeThreeInfoInbound is an intentionally unrouted VLESS inbound used
+// only as the first subscription row. It listens on loopback, has no
+// Cloudflare route, and therefore cannot be selected as a usable VPN server.
+func newModeThreeInfoInbound(uuid, email, name string, includeClient bool) map[string]any {
+	item := map[string]any{}
+	applyModeThreeInfoInbound(item, uuid, email, name, includeClient)
+	return item
+}
+
+func applyModeThreeInfoInbound(item map[string]any, uuid, email, name string, includeClient bool) {
+	item["remark"] = name
+	item["enable"] = true
+	item["expiryTime"] = float64(0)
+	item["total"] = float64(0)
+	item["trafficReset"] = "never"
+	item["listen"] = "127.0.0.1"
+	item["port"] = float64(modeThreeInfoPort)
+	item["protocol"] = "vless"
+	item["tag"] = managerTag + "-info"
+	item["subSortIndex"] = float64(1)
+	item["shareAddrStrategy"] = "custom"
+	item["shareAddr"] = "127.0.0.1"
+	clients := []any{}
+	if includeClient {
+		clients = append(clients, map[string]any{
+			"id": uuid, "email": email, "flow": "", "limitIp": float64(0), "totalGB": float64(0), "expiryTime": float64(0), "enable": true, "tgId": float64(0), "subId": randomHex(8), "comment": "", "reset": float64(0),
+		})
+	}
+	item["settings"] = map[string]any{"clients": clients, "decryption": "none"}
+	item["streamSettings"] = map[string]any{"network": "tcp", "security": "none", "tcpSettings": map[string]any{}}
 	item["sniffing"] = map[string]any{"enabled": false}
 }
 
@@ -1155,12 +1273,43 @@ func firstClientSubID(item map[string]any) string {
 	return stringValue(client["subId"])
 }
 
+// fakeSNIHost returns the hostname of the first (primary) entry in a combined
+// Fake SNI value. The combined format is "host#label" or "host#label,host2#label2".
+// Using only the first entry ensures the primary 3x-ui inbound uses a single,
+// deterministic SNI rather than a malformed combined string.
 func fakeSNIHost(value string) string {
-	host, _, ok := splitFakeSNI(value)
+	first, _, _ := strings.Cut(value, ",")
+	host, _, ok := splitFakeSNI(first)
 	if ok {
 		return host
 	}
 	return ""
+}
+
+func modeThreeSNIName(fakeSNI string) string {
+	labels := make([]string, 0, 2)
+	for _, rawEntry := range strings.Split(fakeSNI, ",") {
+		host, label, ok := splitFakeSNI(rawEntry)
+		if !ok {
+			continue
+		}
+		if label == "" {
+			label = friendlySNIName(host)
+		}
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, " + ")
+}
+
+func modeThreeInboundRemark(fakeSNI, transport string) string {
+	_, name, ok := splitFakeSNI(strings.Split(fakeSNI, ",")[0])
+	if !ok || name == "" {
+		name = friendlySNIName(fakeSNIHost(fakeSNI))
+	}
+	if name == "" {
+		name = "VLESS"
+	}
+	return name + " " + strings.ToUpper(normalizeTransport(transport)) + " 443"
 }
 
 func (m *manager) status() (*statusResponse, error) {
@@ -1224,7 +1373,7 @@ func (m *manager) status() (*statusResponse, error) {
 		status.Saved.Mode3 = &modeThreePreferences{
 			Domain: status.Deployment.Host, FakeSNI: status.Deployment.FakeSNI,
 			PortMode: status.Deployment.PortMode, Transport: status.Deployment.Transport,
-			XHTTPMode:  status.Deployment.XHTTPMode,
+			XHTTPMode: status.Deployment.XHTTPMode, ServerName: status.Deployment.ServerName,
 			TokenSaved: fileHasContent(filepath.Join(m.stateDir, "panel-tunnel-token.txt")),
 		}
 	}
@@ -1315,7 +1464,7 @@ func (m *manager) saveModeThreePreferences(input panelTunnelInput) error {
 		Domain: input.Domain, SubscriptionDomain: input.SubscriptionDomain,
 		PanelDomain: input.PanelDomain, FakeSNI: input.FakeSNI,
 		PortMode: input.PortMode, Transport: input.Transport,
-		XHTTPMode: input.XHTTPMode, TokenSaved: true,
+		XHTTPMode: input.XHTTPMode, ServerName: input.ServerName, TokenSaved: true,
 	}
 	return writeJSONFile(filepath.Join(m.stateDir, "mode3-preferences.json"), pref)
 }
@@ -1541,6 +1690,22 @@ func (p *panelClient) login() error {
 	return nil
 }
 
+func (p *panelClient) loginWithRetry(attempts int, delay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err = p.login(); err == nil {
+			return nil
+		}
+		if attempt+1 < attempts {
+			time.Sleep(delay)
+		}
+	}
+	return err
+}
+
 func (p *panelClient) listInbounds() ([]map[string]any, error) {
 	data, err := p.request(http.MethodGet, "panel/api/inbounds/list", nil)
 	if err != nil {
@@ -1585,12 +1750,91 @@ type panelExternalLink struct {
 	NamePrefix string `json:"namePrefix,omitempty"`
 }
 
-const modeThreeExternalLinkPrefix = "Android Mini Server Mode 3: "
+const (
+	modeThreeExternalLinkPrefix       = "Xray Server Native Mode 3: "
+	modeThreeExternalLinkPrefixLegacy = "Android Mini Server Mode 3: "
+	modeThreeExternalLinkMarker       = "xray-server-native-mode3"
+)
 
 func (p *panelClient) attachClient(email string, inboundIDs []int) error {
 	data, err := p.request(http.MethodPost, "panel/api/clients/"+url.PathEscape(email)+"/attach", map[string]any{"inboundIds": inboundIDs})
 	if err != nil || !jsonSuccess(data) {
 		return errors.New("3x-ui could not attach the Mode 3 client to the xHTTP inbound.")
+	}
+	return nil
+}
+
+// renameClient changes only the client-facing name. The panel's client update
+// endpoint requires a complete client object, so read it before replacing it.
+func (p *panelClient) renameClient(current, desired string) error {
+	if current == desired {
+		return nil
+	}
+	data, err := p.request(http.MethodGet, "panel/api/clients/get/"+url.PathEscape(current), nil)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Obj     struct {
+			Client map[string]any `json:"client"`
+		} `json:"obj"`
+	}
+	if json.Unmarshal(data, &response) != nil || !response.Success || response.Obj.Client == nil {
+		return errors.New("3x-ui could not read the Mode 3 client before renaming it.")
+	}
+	// The read endpoint exposes database/internal representations (such as a
+	// numeric id and stringified allowedIPs) that the update endpoint rejects.
+	// Mode 3 is VLESS-only, so submit the stable VLESS client fields instead.
+	payload := modeThreeClientUpdatePayload(response.Obj.Client, desired)
+	data, err = p.request(http.MethodPost, "panel/api/clients/update/"+url.PathEscape(current), payload)
+	if err != nil || !jsonSuccess(data) {
+		return errors.New("3x-ui could not rename the Mode 3 client to Free. The name may already be in use.")
+	}
+	return nil
+}
+
+func modeThreeClientUpdatePayload(client map[string]any, email string) map[string]any {
+	payload := map[string]any{
+		"id":         stringValue(client["uuid"]),
+		"email":      email,
+		"subId":      stringValue(client["subId"]),
+		"enable":     client["enable"],
+		"totalGB":    client["totalGB"],
+		"expiryTime": client["expiryTime"],
+		"limitIp":    client["limitIp"],
+		"flow":       stringValue(client["flow"]),
+		"tgId":       client["tgId"],
+		"comment":    stringValue(client["comment"]),
+		"reset":      client["reset"],
+		"resetDay":   client["resetDay"],
+		"resetMax":   client["resetMax"],
+	}
+	if payload["id"] == "" {
+		delete(payload, "id")
+	}
+	return payload
+}
+
+// setSubscriptionTitle also removes the internal client email suffix from
+// generated inbound names. External links retain their own explicit remarks.
+func (p *panelClient) setSubscriptionTitle(name string) error {
+	data, err := p.request(http.MethodPost, "panel/api/setting/all", map[string]any{})
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Success bool           `json:"success"`
+		Obj     map[string]any `json:"obj"`
+	}
+	if json.Unmarshal(data, &response) != nil || !response.Success || response.Obj == nil {
+		return errors.New("3x-ui could not read subscription settings.")
+	}
+	response.Obj["subTitle"] = name
+	response.Obj["remarkTemplate"] = "{{INBOUND}}"
+	data, err = p.request(http.MethodPost, "panel/api/setting/update", response.Obj)
+	if err != nil || !jsonSuccess(data) {
+		return errors.New("3x-ui could not save the subscription title.")
 	}
 	return nil
 }
@@ -1612,9 +1856,23 @@ func (p *panelClient) modeThreeExternalLinks(email string) ([]panelExternalLink,
 	return response.Obj.ExternalLinks, nil
 }
 
+func (p *panelClient) clientExists(email string) (bool, error) {
+	data, err := p.request(http.MethodGet, "panel/api/clients/get/"+url.PathEscape(email), nil)
+	if err != nil {
+		return false, err
+	}
+	var response struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return false, errors.New("3x-ui returned an invalid client response.")
+	}
+	return response.Success, nil
+}
+
 // syncModeThreeExternalLinks leaves user-authored rows untouched and replaces
-// only links generated by this module. The primary inbound already contributes
-// links[0] to the subscription, so external rows begin at links[1].
+// only links generated by this module. A hidden NamePrefix marker makes this
+// robust without putting implementation text into the user-visible remark.
 func (p *panelClient) syncModeThreeExternalLinks(email string, links []string) error {
 	existing, err := p.modeThreeExternalLinks(email)
 	if err != nil {
@@ -1622,13 +1880,15 @@ func (p *panelClient) syncModeThreeExternalLinks(email string, links []string) e
 	}
 	next := make([]panelExternalLink, 0, len(existing)+len(links))
 	for _, item := range existing {
-		if !strings.HasPrefix(item.Remark, modeThreeExternalLinkPrefix) {
-			next = append(next, item)
+		if item.NamePrefix == modeThreeExternalLinkMarker ||
+			strings.HasPrefix(item.Remark, modeThreeExternalLinkPrefix) ||
+			strings.HasPrefix(item.Remark, modeThreeExternalLinkPrefixLegacy) {
+			continue
 		}
+		next = append(next, item)
 	}
-	for _, link := range links[1:] {
-		remark := modeThreeExternalLinkPrefix + vlessLinkRemark(link)
-		next = append(next, panelExternalLink{Kind: "link", Value: link, Remark: remark, Enable: true, ExpiryTime: 0})
+	for _, link := range links {
+		next = append(next, panelExternalLink{Kind: "link", Value: link, Remark: vlessLinkRemark(link), Enable: true, ExpiryTime: 0, NamePrefix: modeThreeExternalLinkMarker})
 	}
 	data, err := p.request(http.MethodPost, "panel/api/clients/"+url.PathEscape(email)+"/externalLinks", map[string]any{"externalLinks": next})
 	if err != nil || !jsonSuccess(data) {
@@ -1651,15 +1911,20 @@ func vlessLinkRemark(raw string) string {
 
 // 3x-ui migrates legacy externalProxy entries into Hosts. Those rows take
 // precedence in subscriptions, so updating only the inbound leaves stale links.
+// A missing imported Host row is not an error; it simply means the panel has
+// not yet created one. All matching inbounds for this UUID are updated so that
+// both the WS primary and the xHTTP companion stay in sync.
 func (p *panelClient) syncModeThreeHosts(uuid, domain, fakeSNI string, previous *deployment) error {
 	inbounds, err := p.listInbounds()
 	if err != nil {
 		return err
 	}
+	found := false
 	for _, inbound := range inbounds {
 		if firstClientUUID(inbound) != uuid {
 			continue
 		}
+		found = true
 		id := intValue(inbound["id"])
 		data, err := p.request(http.MethodGet, "panel/api/hosts/byInbound/"+strconv.Itoa(id), nil)
 		if err != nil {
@@ -1687,9 +1952,13 @@ func (p *panelClient) syncModeThreeHosts(uuid, domain, fakeSNI string, previous 
 				return errors.New("Could not update Mode 3 subscription Host address.")
 			}
 		}
-		return nil
 	}
-	return errors.New("Could not find the saved Mode 3 inbound.")
+	// A newly created inbound may not yet have an imported Host row; that is
+	// not a failure. Only a missing inbound itself indicates a logic error.
+	if !found {
+		return errors.New("Could not find the saved Mode 3 inbound.")
+	}
+	return nil
 }
 
 func modeThreeHostGroup(group map[string]any, inboundID int, domain string, previous *deployment) bool {
@@ -1966,15 +2235,43 @@ func buildVLESSLinks(item *deployment) []string {
 				} else {
 					values.Set("security", "none")
 				}
-				transportLabel := ""
-				if len(transports) > 1 {
-					transportLabel = " " + strings.ToUpper(transport)
-				}
-				links = append(links, "vless://"+item.UUID+"@"+sni+":"+strconv.Itoa(port)+"?"+values.Encode()+"#"+url.QueryEscape(label+transportLabel+" "+strconv.Itoa(port)))
+				// Clients already display the transport type on a separate line.
+				// Keep link names compact and consistent across WS and xHTTP.
+				links = append(links, "vless://"+item.UUID+"@"+sni+":"+strconv.Itoa(port)+"?"+values.Encode()+"#"+url.QueryEscape(label+" "+strconv.Itoa(port)))
 			}
 		}
 	}
 	return links
+}
+
+// modeThreeExternalLinks returns only the generated variants that are not
+// already exported by the Mode 3 inbounds. In full mode, WS/443 and xHTTP/443
+// for the first Fake SNI come from the two running 3x-ui inbounds; the other
+// six combinations are external links. This keeps the subscription at exactly
+// eight usable VLESS nodes instead of duplicating one of them.
+func modeThreeExternalLinks(item *deployment) []string {
+	links := buildVLESSLinks(item)
+	if item == nil || len(links) == 0 {
+		return links
+	}
+	firstSNI := fakeSNIHost(item.FakeSNI)
+	actualTransport := map[string]bool{}
+	switch normalizeNativeTransport(item.Transport) {
+	case "dual":
+		actualTransport["ws"] = true
+		actualTransport["xhttp"] = true
+	default:
+		actualTransport[normalizeTransport(item.Transport)] = true
+	}
+	external := make([]string, 0, len(links))
+	for _, raw := range links {
+		parsed, err := url.Parse(raw)
+		if err == nil && parsed.Hostname() == firstSNI && parsed.Port() == "443" && actualTransport[normalizeTransport(parsed.Query().Get("type"))] {
+			continue
+		}
+		external = append(external, raw)
+	}
+	return external
 }
 
 func firstLink(links []string) string {
@@ -2106,6 +2403,23 @@ func normalizeLabel(value string) string {
 	}
 	if len(value) > 48 {
 		return value[:48]
+	}
+	return value
+}
+
+func normalizeServerName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, value)
+	if len(value) > 64 {
+		return value[:64]
+	}
+	if value == "" {
+		return "Vless5G"
 	}
 	return value
 }

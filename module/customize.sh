@@ -16,6 +16,10 @@ STATE_DIR=$MODPATH
 LEGACY_STATE_DIR=/data/local/tmp/android-mini-server-native
 ACTIVE_MODULE_DIR=/data/adb/modules/android-mini-server-native
 
+# Keep the KernelSU WebUI sources packaged as webroot.disabled for now. KernelSU
+# only exposes its module shortcut when a root-level webroot/index.html exists.
+rm -rf "$MODPATH/webroot"
+
 # Preserve mutable state when updating from an earlier build. The active module
 # is still available while KernelSU extracts this ZIP into modules_update.
 for previous in "$ACTIVE_MODULE_DIR" "$LEGACY_STATE_DIR"; do
