@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build manager
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: manager/go.mod
+          cache: false
+
+      - name: Check shell scripts
+        run: |
+          bash -n module/service.sh
+          bash -n module/scripts/common.sh
+          bash -n module/scripts/control.sh
+          bash -n module/scripts/supervisor.sh
+          bash -n module/scripts/webui-bridge.sh
+
+      - name: Test manager
+        working-directory: manager
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build Android ARM64 manager
+        working-directory: manager
+        run: |
+          mkdir -p ../module/manager
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../module/manager/android-mini-server-manager .
+          file ../module/manager/android-mini-server-manager
+
+      - name: Create non-flashable validation package
+        run: |
+          mkdir -p artifacts/ci-package
+          zip -qr artifacts/ci-package/xray-server-native-ci.zip module LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_SOURCES.md LICENSES
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-server-native-${{ github.sha }}
+          path: artifacts/ci-package/
+          if-no-files-found: error
+          retention-days: 7
