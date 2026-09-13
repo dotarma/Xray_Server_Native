@@ -183,5 +183,7 @@ recording their provenance and licenses.
 
 GitHub Actions builds and tests the manager on every pull request, produces a
 non-flashable validation ZIP, and attaches an SPDX SBOM plus Go module
-inventory. See [SECURITY.md](SECURITY.md) for release and dependency-update
-controls.
+inventory. To build a flashable module, run the `CI` workflow manually and
+provide the verified curl CA Extract SHA-256; download the resulting
+`ifyUI-module-<commit>` artifact. See [SECURITY.md](SECURITY.md) for release
+and dependency-update controls.

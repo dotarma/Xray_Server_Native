@@ -5,6 +5,11 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      ca_cert_sha256:
+        description: Verified SHA-256 for https://curl.se/ca/cacert.pem
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -69,3 +74,47 @@ jobs:
           path: artifacts/ci-package/
           if-no-files-found: error
           retention-days: 7
+
+  package:
+    name: Build flashable module ZIP
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.ca_cert_sha256 != '' }}
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: manager/go.mod
+          cache: false
+
+      - name: Validate CA checksum input
+        shell: pwsh
+        run: |
+          if ('${{ inputs.ca_cert_sha256 }}' -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'ca_cert_sha256 must be a SHA-256 digest.'
+          }
+
+      - name: Download and verify upstream payloads
+        shell: pwsh
+        run: .\tools\prepare-upstream-binaries.ps1 -CaCertSha256 '${{ inputs.ca_cert_sha256 }}'
+
+      - name: Build Android ARM64 manager
+        shell: pwsh
+        run: .\tools\build-manager.ps1
+
+      - name: Build flashable ZIP
+        shell: pwsh
+        run: .\tools\package-module.ps1 -OutputDirectory artifacts\release
+
+      - name: Upload flashable module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ifyUI-module-${{ github.sha }}
+          path: artifacts/release/*.zip
+          if-no-files-found: error
+          retention-days: 14
