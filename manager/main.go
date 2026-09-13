@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,8 +36,10 @@ const (
 	modeThreeXHTTPInternalPort = 38080
 	modeThreeInfoPort          = 18081
 	managerBuild               = "1.0.0"
-	cloudflareAPI              = "https://api.cloudflare.com/client/v4"
 	maxRequestBytes            = 32 << 10
+	maxTransportHeaderBytes    = 8 << 10
+	maxDemuxConnections        = 128
+	maxQuickHostnameLogBytes   = 64 << 10
 	panelPortDefault           = 2053
 	modeThreeOriginPort        = 8080
 	fakeTikTokSNI              = "api24-normal-alisg.tiktokv.com"
@@ -48,7 +51,6 @@ const (
 var (
 	domainPattern        = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 	quickHostnamePattern = regexp.MustCompile(`https://([a-z0-9-]+\.trycloudflare\.com)`)
-	idPattern            = regexp.MustCompile(`^[a-fA-F0-9-]{36}$`)
 )
 
 type manager struct {
@@ -141,8 +143,6 @@ type statusResponse struct {
 	ManagerURL       string              `json:"managerUrl"`
 	ManagerBuild     string              `json:"managerBuild"`
 	PanelURL         string              `json:"panelUrl"`
-	PanelUsername    string              `json:"panelUsername,omitempty"`
-	PanelPassword    string              `json:"panelPassword,omitempty"`
 	PanelTunnelURL   string              `json:"panelTunnelUrl,omitempty"`
 	AndroidRelease   string              `json:"androidRelease"`
 	DeviceABI        string              `json:"deviceAbi"`
@@ -210,7 +210,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           securityHeaders(mux),
+		Handler:           securityHeaders(m.requirePanelAuth(m.requireSameOrigin(mux))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       25 * time.Second,
 		WriteTimeout:      90 * time.Second,
@@ -230,29 +230,49 @@ func runTransportDemux(listenAddress, wsAddress, xhttpAddress string) error {
 		return fmt.Errorf("transport demux cannot listen on %s: %w", listenAddress, err)
 	}
 	defer listener.Close()
+	slots := make(chan struct{}, maxDemuxConnections)
 	for {
 		client, err := listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			return err
 		}
-		go proxyTransportConnection(client, wsAddress, xhttpAddress)
+		select {
+		case slots <- struct{}{}:
+			go func() {
+				defer func() { <-slots }()
+				proxyTransportConnection(client, wsAddress, xhttpAddress)
+			}()
+		default:
+			_ = client.Close()
+		}
 	}
 }
 
 func proxyTransportConnection(client net.Conn, wsAddress, xhttpAddress string) {
 	defer client.Close()
-	reader := bufio.NewReaderSize(client, 8192)
-	client.SetReadDeadline(time.Now().Add(8 * time.Second))
+	reader := bufio.NewReaderSize(client, maxTransportHeaderBytes)
+	_ = client.SetReadDeadline(time.Now().Add(8 * time.Second))
 	var header bytes.Buffer
-	for header.Len() < 8192 {
+	complete := false
+	for header.Len() < maxTransportHeaderBytes {
 		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
 		header.WriteString(line)
-		if strings.Contains(header.String(), "\r\n\r\n") || err != nil {
+		if header.Len() > maxTransportHeaderBytes {
+			return
+		}
+		if line == "\r\n" {
+			complete = true
 			break
 		}
 	}
-	client.SetReadDeadline(time.Time{})
-	if header.Len() == 0 {
+	_ = client.SetReadDeadline(time.Time{})
+	if !complete {
 		return
 	}
 	backendAddress := xhttpAddress
@@ -264,9 +284,11 @@ func proxyTransportConnection(client net.Conn, wsAddress, xhttpAddress string) {
 		return
 	}
 	defer backend.Close()
+	_ = backend.SetWriteDeadline(time.Now().Add(8 * time.Second))
 	if _, err := backend.Write(header.Bytes()); err != nil {
 		return
 	}
+	_ = backend.SetWriteDeadline(time.Time{})
 	go func() { _, _ = io.Copy(backend, reader); backend.Close() }()
 	_, _ = io.Copy(client, backend)
 }
@@ -277,6 +299,40 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (m *manager) requirePanelAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, err := m.panelCredentials()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{Error: "Panel credentials are not initialized."})
+			return
+		}
+		providedUser, providedPassword, ok := r.BasicAuth()
+		matches := subtle.ConstantTimeCompare([]byte(providedUser), []byte(username)) & subtle.ConstantTimeCompare([]byte(providedPassword), []byte(password))
+		if !ok || matches != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Android Mini Server", charset="UTF-8"`)
+			writeJSON(w, http.StatusUnauthorized, apiError{Error: "Authentication required."})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (m *manager) requireSameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Header.Get("Origin") != "http://"+r.Host {
+			writeJSON(w, http.StatusForbidden, apiError{Error: "Cross-origin requests are not allowed."})
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -329,7 +385,11 @@ func (m *manager) handleServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer m.mu.Unlock()
-	output, err := m.control(command)
+	args := []string{command}
+	if input.Service == "all" && (input.Action == "stop" || input.Action == "restart") {
+		args = append(args, "keep-manager")
+	}
+	output, err := m.control(args...)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: userSafeCommandError(err, output)})
 		return
@@ -354,7 +414,10 @@ func (m *manager) handleTunnelToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: "Tunnel token is malformed."})
 		return
 	}
-	m.mu.Lock()
+	if !m.mu.TryLock() {
+		writeJSON(w, http.StatusConflict, apiError{Error: "Another server operation is in progress. Wait for it to finish, then try again."})
+		return
+	}
 	defer m.mu.Unlock()
 	err := m.saveTunnelToken(strings.TrimSpace(input.Token), "named")
 	if err == nil {
@@ -386,9 +449,12 @@ func (m *manager) handleQuickDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.mu.Lock()
+	if !m.mu.TryLock() {
+		writeJSON(w, http.StatusConflict, apiError{Error: "Another server operation is in progress. Wait for it to finish, then try again."})
+		return
+	}
+	defer m.mu.Unlock()
 	deployed, err := m.deployQuick(input)
-	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: err.Error()})
 		return
@@ -426,9 +492,12 @@ func (m *manager) handleModeTwoDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.mu.Lock()
+	if !m.mu.TryLock() {
+		writeJSON(w, http.StatusConflict, apiError{Error: "Another server operation is in progress. Wait for it to finish, then try again."})
+		return
+	}
+	defer m.mu.Unlock()
 	deployed, err := m.deployModeTwo(input)
-	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: err.Error()})
 		return
@@ -1345,11 +1414,9 @@ func (m *manager) status() (*statusResponse, error) {
 		AndroidRelease:   property("ro.build.version.release"),
 		DeviceABI:        property("ro.product.cpu.abi"),
 	}
-	if credentials, err := readEnvFile(filepath.Join(m.stateDir, "panel-credentials.txt")); err == nil {
-		status.PanelUsername = credentials["username"]
-		status.PanelPassword = credentials["password"]
+	if activeMode == "mode1" || activeMode == "quick" {
+		status.QuickHostname = m.modeQuickHostname()
 	}
-	status.QuickHostname = m.modeQuickHostname()
 	if host := m.panelTunnelHostname(); host != "" {
 		status.PanelTunnelURL = "https://" + host + ensureLeadingSlash(basePath)
 	}
@@ -1526,7 +1593,23 @@ func (m *manager) waitForQuickHostname(timeout time.Duration) (string, error) {
 }
 
 func hostnameFromLog(path string) string {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := info.Size() - maxQuickHostnameLogBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxQuickHostnameLogBytes))
 	if err != nil {
 		return ""
 	}
@@ -1551,12 +1634,13 @@ func (m *manager) reconcileQuickDeployment() {
 	for {
 		m.mu.Lock()
 		item, err := m.loadDeployment()
-		host := m.modeQuickHostname()
-		if err == nil && item != nil && (item.Mode == "mode1" || item.Mode == "quick") && host != "" && host != item.Host {
-			item.Host = host
-			item.Links = buildVLESSLinks(item)
-			item.Link = firstLink(item.Links)
-			err = m.saveDeployment(item)
+		if err == nil && item != nil && (item.Mode == "mode1" || item.Mode == "quick") {
+			if host := m.modeQuickHostname(); host != "" && host != item.Host {
+				item.Host = host
+				item.Links = buildVLESSLinks(item)
+				item.Link = firstLink(item.Links)
+				err = m.saveDeployment(item)
+			}
 		}
 		m.mu.Unlock()
 		time.Sleep(3 * time.Second)
@@ -2091,104 +2175,6 @@ func (p *panelClient) request(method, path string, payload any) ([]byte, error) 
 	return data, nil
 }
 
-type cloudflareClient struct {
-	token  string
-	client *http.Client
-}
-
-func newCloudflareClient(token string) *cloudflareClient {
-	return &cloudflareClient{token: token, client: &http.Client{Timeout: 30 * time.Second}}
-}
-
-func (c *cloudflareClient) createTunnel(accountID, name string) (string, string, error) {
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := c.request(http.MethodPost, "/accounts/"+accountID+"/cfd_tunnel", map[string]any{"name": name, "config_src": "cloudflare"}, &result); err != nil {
-		return "", "", err
-	}
-	if !idPattern.MatchString(result.ID) {
-		return "", "", errors.New("Cloudflare returned an invalid tunnel ID.")
-	}
-	var token string
-	if err := c.request(http.MethodGet, "/accounts/"+accountID+"/cfd_tunnel/"+result.ID+"/token", nil, &token); err != nil {
-		return "", "", err
-	}
-	if !validSecret(token, 32, 4096) {
-		return "", "", errors.New("Cloudflare did not return a usable connector token.")
-	}
-	return result.ID, token, nil
-}
-
-func (c *cloudflareClient) findZone(domain string) (string, error) {
-	var result []struct {
-		ID string `json:"id"`
-	}
-	if err := c.request(http.MethodGet, "/zones?name="+url.QueryEscape(domain), nil, &result); err != nil || len(result) != 1 || !validID(result[0].ID) {
-		return "", errors.New("Zone not found")
-	}
-	return result[0].ID, nil
-}
-
-func (c *cloudflareClient) putTunnelConfig(accountID, tunnelID string, ingress []map[string]any) error {
-	return c.request(http.MethodPut, "/accounts/"+accountID+"/cfd_tunnel/"+tunnelID+"/configurations", map[string]any{"config": map[string]any{"ingress": ingress}}, nil)
-}
-
-func (c *cloudflareClient) upsertCNAME(zoneID, name, target string) error {
-	var existing []struct {
-		ID string `json:"id"`
-	}
-	err := c.request(http.MethodGet, "/zones/"+zoneID+"/dns_records?type=CNAME&name="+url.QueryEscape(name), nil, &existing)
-	if err != nil {
-		return err
-	}
-	body := map[string]any{"type": "CNAME", "name": name, "content": target, "proxied": true, "ttl": 1}
-	if len(existing) > 0 {
-		return c.request(http.MethodPut, "/zones/"+zoneID+"/dns_records/"+existing[0].ID, body, nil)
-	}
-	return c.request(http.MethodPost, "/zones/"+zoneID+"/dns_records", body, nil)
-}
-
-func (c *cloudflareClient) request(method, path string, payload any, result any) error {
-	var body io.Reader
-	if payload != nil {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(data)
-	}
-	request, err := http.NewRequest(method, cloudflareAPI+path, body)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := c.client.Do(request)
-	if err != nil {
-		return err
-	}
-	data, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	var envelope struct {
-		Success bool `json:"success"`
-		Errors  []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-		Result json.RawMessage `json:"result"`
-	}
-	if json.Unmarshal(data, &envelope) != nil || response.StatusCode < 200 || response.StatusCode >= 300 || !envelope.Success {
-		if len(envelope.Errors) > 0 && envelope.Errors[0].Message != "" {
-			return errors.New("Cloudflare: " + envelope.Errors[0].Message)
-		}
-		return fmt.Errorf("Cloudflare API returned HTTP %d", response.StatusCode)
-	}
-	if result != nil && len(envelope.Result) > 0 {
-		return json.Unmarshal(envelope.Result, result)
-	}
-	return nil
-}
-
 func buildVLESSLink(item *deployment) string { return firstLink(buildVLESSLinks(item)) }
 
 func buildVLESSLinks(item *deployment) []string {
@@ -2400,7 +2386,6 @@ func validSecret(value string, min, max int) bool {
 	value = strings.TrimSpace(value)
 	return len(value) >= min && len(value) <= max && !strings.ContainsAny(value, "\r\n\x00")
 }
-func validID(value string) bool { return regexp.MustCompile(`^[a-zA-Z0-9-]{8,64}$`).MatchString(value) }
 func validPort(value int) bool  { return value >= 1 && value <= 65535 }
 func normalizeLabel(value string) string {
 	value = strings.TrimSpace(value)

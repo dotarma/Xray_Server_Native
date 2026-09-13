@@ -13,8 +13,11 @@ authored by Xray Server Native.
 | `module/cacert.pem` | curl CA Extract | MPL-2.0 | None. |
 
 The download and patch process is implemented in
-`tools/prepare-upstream-binaries.ps1`. It verifies release-asset SHA-256
-digests supplied by GitHub before applying an equal-length binary patch.
+`tools/prepare-upstream-binaries.ps1`. It pins release versions and requires
+their recorded SHA-256 values to match both GitHub release metadata and the
+downloaded asset before applying an equal-length binary patch. The mutable curl
+CA Extract requires an explicit, operator-verified SHA-256 argument; record it
+in release notes before publishing a ZIP.
 
 Recorded upstream release-asset SHA-256 values:
 

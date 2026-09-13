@@ -187,6 +187,67 @@ func TestTransportDemuxRoutesWebSocketAndXHTTP(t *testing.T) {
 	}
 }
 
+func TestTransportDemuxRejectsIncompleteHeaders(t *testing.T) {
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		proxyTransportConnection(server, "127.0.0.1:1", "127.0.0.1:1")
+		close(done)
+	}()
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: localhost\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("demux did not reject an incomplete header")
+	}
+}
+
+func TestManagerAuthenticationAndSameOrigin(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "panel-credentials.txt"), []byte("username=admin\npassword=secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &manager{stateDir: stateDir}
+	handler := m.requirePanelAuth(m.requireSameOrigin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	unauthorized := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:2036/api/status", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, unauthorized)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("unauthenticated request = %d, want HTTP 401 with challenge", response.Code)
+	}
+
+	allowed := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:2036/api/status", nil)
+	allowed.SetBasicAuth("admin", "secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, allowed)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("authenticated request = %d, want HTTP 204", response.Code)
+	}
+
+	blocked := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:2036/api/services", nil)
+	blocked.SetBasicAuth("admin", "secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, blocked)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin mutation = %d, want HTTP 403", response.Code)
+	}
+
+	allowedMutation := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:2036/api/services", nil)
+	allowedMutation.SetBasicAuth("admin", "secret")
+	allowedMutation.Header.Set("Origin", "http://"+allowedMutation.Host)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, allowedMutation)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("same-origin mutation = %d, want HTTP 204", response.Code)
+	}
+}
+
 func testBackend(t *testing.T, response string) net.Listener {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

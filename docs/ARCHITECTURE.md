@@ -52,8 +52,10 @@ with `control.sh set-admin`.
 ## Manager model
 
 `android-mini-server-manager` is a statically-linked Go ARM64 executable that
-serves its original web UI only on `127.0.0.1:2036`. It authenticates with the
-root-only 3x-ui credential file and calls `control.sh` for lifecycle actions.
+serves its original web UI only on `127.0.0.1:2036`. Every route requires HTTP
+Basic authentication against the root-only 3x-ui credential file; mutating
+requests also require a matching loopback Origin header. It calls `control.sh`
+for lifecycle actions without returning credentials in its status response.
 Native Modes 1 and 2 use a separate Xray configuration and never modify
 3x-ui inbounds. Mode 3 identifies only its own VLESS inbounds by tag and
 persisted UUID/path; existing user-created inbounds are not modified.
@@ -88,10 +90,12 @@ the system partition.
 
 ## Supervision
 
-The supervisor checks desired services every 20 seconds by default. It creates
-PID files for 3x-ui, cloudflared, and the manager, removes stale PID files, and
-restarts an exited process on the next pass. Module disable is honored without
-a reboot by stopping all managed processes when the `disable` marker appears.
+The supervisor checks desired services every 20 seconds by default. Atomic
+directory locks prevent concurrent supervisors and duplicate service starts;
+it creates PID files for 3x-ui, cloudflared, and the manager, removes stale PID
+files, and restarts an exited process on the next pass. Service logs rotate at
+1 MiB by default and retain one `.1` copy. Module disable is honored without a
+reboot by stopping all managed processes when the `disable` marker appears.
 
 The 3x-ui process owns Xray. The module should not independently kill a child
 Xray process during normal shutdown because that would bypass 3x-ui cleanup.

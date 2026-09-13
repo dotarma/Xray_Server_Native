@@ -2,6 +2,11 @@
 param(
     [ValidatePattern('^v\d+\.\d+\.\d+$')]
     [string]$XuiVersion = 'v3.7.0',
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$CloudflaredVersion = '2026.9.0',
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[a-fA-F0-9]{64}$')]
+    [string]$CaCertSha256,
     [switch]$Force
 )
 
@@ -12,6 +17,10 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $moduleRoot = Join-Path $projectRoot 'module'
 $binDir = Join-Path $projectRoot 'module\bin'
 $userAgent = @{ 'User-Agent' = 'android-mini-server-native-builder' }
+$recordedReleaseDigests = @{
+    'MHSanaei/3x-ui|v3.7.0|x-ui-linux-arm64.tar.gz' = '3caf1db1e8b10bb1fa1324c945522690bcf01c533ee75b377268f1c01a3ce896'
+    'cloudflare/cloudflared|2026.9.0|cloudflared-linux-arm64' = '98aca3173f73248fad6180fc75dade2d186a6e54fa807e088108cb4345de8efe'
+}
 
 function Get-ReleaseAsset {
     param(
@@ -25,21 +34,6 @@ function Get-ReleaseAsset {
     $asset = @($release.assets | Where-Object { $_.name -eq $Name })[0]
     if (-not $asset) {
         throw "Release $Repository $Tag does not contain asset $Name."
-    }
-    return $asset
-}
-
-function Get-LatestReleaseAsset {
-    param(
-        [Parameter(Mandatory)] [string]$Repository,
-        [Parameter(Mandatory)] [string]$Name
-    )
-
-    $releaseUrl = "https://api.github.com/repos/$Repository/releases/latest"
-    $release = Invoke-RestMethod -Uri $releaseUrl -Headers $userAgent
-    $asset = @($release.assets | Where-Object { $_.name -eq $Name })[0]
-    if (-not $asset) {
-        throw "Latest release for $Repository does not contain asset $Name."
     }
     return $asset
 }
@@ -88,6 +82,48 @@ function Get-AssetDigest {
     return $Matches[1]
 }
 
+function Get-RecordedDigest {
+    param(
+        [Parameter(Mandatory)] [string]$Repository,
+        [Parameter(Mandatory)] [string]$Tag,
+        [Parameter(Mandatory)] [string]$Name
+    )
+
+    $key = "$Repository|$Tag|$Name"
+    if (-not $recordedReleaseDigests.ContainsKey($key)) {
+        throw "No reviewed SHA-256 is recorded for $key. Update BINARY_SOURCES.md and this lock table before building."
+    }
+    return $recordedReleaseDigests[$key]
+}
+
+function Assert-ReleaseAssetDigest {
+    param(
+        [Parameter(Mandatory)] $Asset,
+        [Parameter(Mandatory)] [string]$Expected,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    $published = Get-AssetDigest -Asset $Asset -Label $Label
+    if ($published -ne $Expected) {
+        throw "$Label release metadata differs from the reviewed SHA-256. Expected $Expected, got $published."
+    }
+}
+
+function Save-Url {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [string]$Destination
+    )
+
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source --fail --location --silent --show-error --retry 3 --retry-all-errors --connect-timeout 20 --speed-time 60 --speed-limit 1024 --output $Destination -- $Uri
+        if ($LASTEXITCODE -ne 0) { throw "Download failed for $Uri with curl exit code $LASTEXITCODE." }
+        return
+    }
+    Invoke-WebRequest -Uri $Uri -OutFile $Destination -Headers $userAgent
+}
+
 function Assert-TargetAvailable {
     param([Parameter(Mandatory)] [string]$Path)
 
@@ -116,8 +152,10 @@ try {
     $xuiArchive = Join-Path $workDir $xuiArchiveName
 
     $xuiAsset = Get-ReleaseAsset -Repository 'MHSanaei/3x-ui' -Tag $XuiVersion -Name $xuiArchiveName
+    $xuiDigest = Get-RecordedDigest -Repository 'MHSanaei/3x-ui' -Tag $XuiVersion -Name $xuiArchiveName
+    Assert-ReleaseAssetDigest -Asset $xuiAsset -Expected $xuiDigest -Label $xuiArchiveName
     Save-Asset -Asset $xuiAsset -Destination $xuiArchive
-    Assert-Sha256 -Path $xuiArchive -Expected (Get-AssetDigest -Asset $xuiAsset -Label $xuiArchiveName) -Label $xuiArchiveName
+    Assert-Sha256 -Path $xuiArchive -Expected $xuiDigest -Label $xuiArchiveName
 
     $xuiExtractDir = Join-Path $workDir 'x-ui-extract'
     New-Item -ItemType Directory -Path $xuiExtractDir | Out-Null
@@ -146,14 +184,19 @@ try {
         Remove-Item -LiteralPath $obsoleteXui -Force
     }
 
-    $cloudflaredAsset = Get-LatestReleaseAsset -Repository 'cloudflare/cloudflared' -Name 'cloudflared-linux-arm64'
+    $cloudflaredAsset = Get-ReleaseAsset -Repository 'cloudflare/cloudflared' -Tag $CloudflaredVersion -Name 'cloudflared-linux-arm64'
+    $cloudflaredDigest = Get-RecordedDigest -Repository 'cloudflare/cloudflared' -Tag $CloudflaredVersion -Name 'cloudflared-linux-arm64'
+    Assert-ReleaseAssetDigest -Asset $cloudflaredAsset -Expected $cloudflaredDigest -Label 'cloudflared-linux-arm64'
     $upstreamCloudflared = Join-Path $workDir 'cloudflared-linux-arm64'
     Save-Asset -Asset $cloudflaredAsset -Destination $upstreamCloudflared
 
-    Assert-Sha256 -Path $upstreamCloudflared -Expected (Get-AssetDigest -Asset $cloudflaredAsset -Label 'cloudflared-linux-arm64') -Label 'cloudflared-linux-arm64'
+    Assert-Sha256 -Path $upstreamCloudflared -Expected $cloudflaredDigest -Label 'cloudflared-linux-arm64'
     & (Join-Path $PSScriptRoot 'patch-cloudflared-android-dns.ps1') -Source $upstreamCloudflared -Destination (Join-Path $binDir 'cloudflared')
 
-    Invoke-WebRequest -Uri 'https://curl.se/ca/cacert.pem' -OutFile (Join-Path $moduleRoot 'cacert.pem')
+    $caCert = Join-Path $workDir 'cacert.pem'
+    Save-Url -Uri 'https://curl.se/ca/cacert.pem' -Destination $caCert
+    Assert-Sha256 -Path $caCert -Expected $CaCertSha256 -Label 'cacert.pem'
+    Copy-Item -LiteralPath $caCert -Destination (Join-Path $moduleRoot 'cacert.pem') -Force
 
     Write-Host ''
     Write-Host "Prepared the patched x-ui in $moduleRoot and verified upstream data in $binDir"

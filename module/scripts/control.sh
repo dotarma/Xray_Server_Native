@@ -84,13 +84,16 @@ command_start() {
 }
 
 command_stop() {
+  keep_manager=${1:-}
   stop_pid_file "$TUNNEL_PID_FILE" "cloudflared"
   stop_native_demux
   stop_panel_demux
   stop_pid_file "$PANEL_TUNNEL_PID_FILE" "cloudflared"
   stop_pid_file "$QUICK_SERVER_PID_FILE" "xray-linux-arm64"
   stop_pid_file "$PANEL_PID_FILE" "x-ui"
-  stop_pid_file "$MANAGER_PID_FILE" "android-mini-server-manager"
+  if [ "$keep_manager" != "keep-manager" ]; then
+    stop_pid_file "$MANAGER_PID_FILE" "android-mini-server-manager"
+  fi
 }
 
 command_start_mode() {
@@ -249,8 +252,8 @@ command_set_admin() {
 
 case "${1:-}" in
   start) command_start ;;
-  stop) command_stop ;;
-  restart) command_stop; command_start ;;
+  stop) command_stop "$2" ;;
+  restart) command_stop "$2"; command_start ;;
   start-panel) ensure_state_dirs; load_config; start_panel ;;
   stop-panel) stop_pid_file "$PANEL_PID_FILE" "x-ui" ;;
   restart-panel) stop_pid_file "$PANEL_PID_FILE" "x-ui"; ensure_state_dirs; load_config; start_panel ;;

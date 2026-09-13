@@ -8,12 +8,13 @@ fi
 
 ensure_state_dirs || exit 1
 
-if pid_is_running "$SUPERVISOR_PID_FILE" "supervisor.sh"; then
+if ! acquire_lock "$SUPERVISOR_LOCK_DIR"; then
   exit 0
 fi
 printf '%s\n' "$$" > "$SUPERVISOR_PID_FILE"
 cleanup() {
   rm -f "$SUPERVISOR_PID_FILE"
+  release_lock "$SUPERVISOR_LOCK_DIR"
 }
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM

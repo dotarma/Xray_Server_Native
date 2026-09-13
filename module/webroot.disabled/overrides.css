@@ -96,17 +96,6 @@
   white-space: nowrap;
 }
 
-.credential-row b {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.panel-credentials .credential-row button {
-  flex: 0 0 auto;
-  margin-left: 0;
-}
-
 @media (max-width: 480px) {
   .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

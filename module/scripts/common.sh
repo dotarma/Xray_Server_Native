@@ -34,6 +34,7 @@ NATIVE_DEMUX_LOG=$LOG_DIR/native-demux.log
 PANEL_DEMUX_LOG=$LOG_DIR/panel-demux.log
 SUPERVISOR_LOG=$LOG_DIR/supervisor.log
 SUPERVISOR_PID_FILE=$PID_DIR/supervisor.pid
+SUPERVISOR_LOCK_DIR=$PID_DIR/supervisor.lock
 MANAGER_LOG=$LOG_DIR/manager.log
 MANAGER_PID_FILE=$PID_DIR/manager.pid
 XUI_BIN=$MODDIR/x-ui
@@ -71,11 +72,13 @@ reset_config() {
   MANAGER_ENABLED=true
   MANAGER_PORT=2036
   SUPERVISOR_INTERVAL=20
+  LOG_MAX_BYTES=1048576
 }
 reset_config
 
 log_line() {
   mkdir -p "$LOG_DIR" 2>/dev/null
+  rotate_log "$SUPERVISOR_LOG"
   message="$(date '+%Y-%m-%d %H:%M:%S') $*"
   printf '%s\n' "$message" >> "$SUPERVISOR_LOG"
   /system/bin/log -t AndroidMiniServer "$message" 2>/dev/null || true
@@ -146,6 +149,59 @@ is_valid_interval() {
     ''|*[!0-9]*) return 1 ;;
   esac
   [ "$1" -ge 10 ] 2>/dev/null && [ "$1" -le 3600 ] 2>/dev/null
+}
+
+is_valid_log_size() {
+  case "${1:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 65536 ] 2>/dev/null && [ "$1" -le 16777216 ] 2>/dev/null
+}
+
+rotate_log() {
+  log_file=$1
+  [ -f "$log_file" ] || return 0
+  is_valid_log_size "$LOG_MAX_BYTES" || return 0
+  log_size=$(wc -c < "$log_file" 2>/dev/null) || return 0
+  [ "$log_size" -gt "$LOG_MAX_BYTES" ] || return 0
+  cp -f "$log_file" "$log_file.1" 2>/dev/null || return 1
+  : > "$log_file" || return 1
+  chmod 600 "$log_file" "$log_file.1" 2>/dev/null
+}
+
+lock_is_active() {
+  lock_dir=$1
+  [ -f "$lock_dir/pid" ] || return 1
+  lock_pid=$(cat "$lock_dir/pid" 2>/dev/null)
+  case "$lock_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$lock_pid" 2>/dev/null
+}
+
+acquire_lock() {
+  lock_dir=$1
+  attempt=0
+  while [ "$attempt" -lt 2 ]; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$lock_dir/pid" || {
+        rmdir "$lock_dir" 2>/dev/null
+        return 1
+      }
+      return 0
+    fi
+    lock_is_active "$lock_dir" && return 1
+    rm -f "$lock_dir/pid" 2>/dev/null
+    rmdir "$lock_dir" 2>/dev/null || return 1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+release_lock() {
+  lock_dir=$1
+  rm -f "$lock_dir/pid" 2>/dev/null
+  rmdir "$lock_dir" 2>/dev/null
 }
 
 pid_is_running() {
@@ -336,11 +392,19 @@ start_background() {
   log_file=$3
   shift 3
 
-  remove_stale_pid "$pid_file" "$name"
-  if pid_is_running "$pid_file" "$name"; then
+  lock_dir="${pid_file}.lock"
+  if ! acquire_lock "$lock_dir"; then
+    log_line "$name startup is already in progress"
     return 0
   fi
 
+  remove_stale_pid "$pid_file" "$name"
+  if pid_is_running "$pid_file" "$name"; then
+    release_lock "$lock_dir"
+    return 0
+  fi
+
+  rotate_log "$log_file"
   umask 077
   "$@" >> "$log_file" 2>&1 &
   pid=$!
@@ -349,9 +413,11 @@ start_background() {
   if ! pid_is_running "$pid_file" "$name"; then
     log_line "$name exited during startup; inspect $log_file"
     rm -f "$pid_file"
+    release_lock "$lock_dir"
     return 1
   fi
   log_line "started $name pid=$pid"
+  release_lock "$lock_dir"
 }
 
 start_panel() {

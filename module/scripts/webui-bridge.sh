@@ -8,6 +8,7 @@ MODDIR=${0%/*}
 MODDIR=${MODDIR%/scripts}
 STATE_DIR=$MODDIR
 CONFIG_FILE=$STATE_DIR/service.env
+CREDENTIALS_FILE=$STATE_DIR/panel-credentials.txt
 RUN_DIR=$STATE_DIR/run
 KSU_BUSYBOX=/data/adb/ksu/bin/busybox
 if [ ! -x "$KSU_BUSYBOX" ]; then
@@ -30,6 +31,11 @@ get_config_value() {
   [ -n "$value" ] && printf '%s\n' "$value" || printf '%s\n' "$fallback"
 }
 
+get_credential_value() {
+  key=$1
+  $KSU_BUSYBOX sed -n "s/^${key}=//p" "$CREDENTIALS_FILE" 2>/dev/null | $KSU_BUSYBOX tail -n 1
+}
+
 decode_payload() {
   encoded=$1
   [ -n "$encoded" ] || return 1
@@ -42,8 +48,12 @@ request() {
   payload=$3
   manager_port=$(get_config_value MANAGER_PORT 2036)
   url="http://127.0.0.1:${manager_port}${endpoint}"
+  username=$(get_credential_value username)
+  password=$(get_credential_value password)
+  [ -n "$username" ] && [ -n "$password" ] || json_error "Panel credentials are not initialized."
+  auth=$(printf '%s:%s' "$username" "$password" | $KSU_BUSYBOX base64 | tr -d '\r\n')
   if [ "$method" = GET ]; then
-    $KSU_BUSYBOX wget -q -O - "$url" 2>/dev/null
+    $KSU_BUSYBOX wget -q -O - --header "Authorization: Basic $auth" "$url" 2>/dev/null
     return 0
   fi
 
@@ -52,6 +62,8 @@ request() {
   umask 077
   printf '%s' "$payload" > "$request_file" || json_error "Could not write the local request file."
   $KSU_BUSYBOX wget -q -O - \
+    --header "Authorization: Basic $auth" \
+    --header "Origin: http://127.0.0.1:${manager_port}" \
     --header "Content-Type: application/json" \
     --post-file "$request_file" \
     "$url" 2>/dev/null

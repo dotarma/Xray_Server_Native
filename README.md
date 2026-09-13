@@ -56,8 +56,8 @@ Cloudflare public hostname -> cloudflared -> loopback origin
 2. Reboot the device once.
 3. Open `http://127.0.0.1:2036` on Magisk, or open the module WebUI in
    KernelSU Manager.
-4. Use the displayed 3x-ui username and copy the displayed password to sign
-   in at `http://127.0.0.1:2053`.
+4. Authenticate the manager and 3x-ui with the same credentials. Retrieve
+   them only from a root shell with `scripts/control.sh credentials`.
 5. Configure only the mode you need. A fresh installation runs 3x-ui and the
    local manager but does not start a Cloudflare Tunnel or native Xray mode.
 
@@ -121,9 +121,14 @@ From PowerShell on Windows:
 
 ```powershell
 Set-Location D:\project2026\Xray_Server_Native
-.\tools\prepare-upstream-binaries.ps1
+.\tools\prepare-upstream-binaries.ps1 -CaCertSha256 '<verified curl CA Extract SHA-256>'
 .\tools\package-module.ps1
 ```
+
+Obtain the CA digest from the official curl CA Extract release information and
+record the reviewed value in release notes before packaging. The preparation
+script refuses an unpinned CA bundle and any release asset that differs from
+the reviewed digests in `BINARY_SOURCES.md`.
 
 The package is written to `artifacts/packages/xray-server-native/<version>/`.
 The manager is Go source in
